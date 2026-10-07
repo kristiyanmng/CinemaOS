@@ -23,16 +23,15 @@ async function seed(env) {
 }
 
 async function ensurePlaylistSchema(env) {
-  await env.DB.exec(`
-    CREATE TABLE IF NOT EXISTS playlists (
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS playlists (
       id TEXT PRIMARY KEY,
       screening_id TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (screening_id) REFERENCES screenings(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS playlist_items (
+    )`,
+    `CREATE TABLE IF NOT EXISTS playlist_items (
       id TEXT PRIMARY KEY,
       playlist_id TEXT NOT NULL,
       position INTEGER NOT NULL,
@@ -42,8 +41,12 @@ async function ensurePlaylistSchema(env) {
       duration_seconds INTEGER NOT NULL DEFAULT 0,
       cue_json TEXT,
       FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
-    );
-  `);
+    )`
+  ];
+
+  for (const sql of statements) {
+    await env.DB.prepare(sql).run();
+  }
 }
 
 async function getPlaylists(env) {
@@ -123,10 +126,10 @@ async function getScreenings(env) {
 
 export default {
   async fetch(request, env) {
+    try {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
     await seed(env);
-    await ensurePlaylistSchema(env);
 
     if (url.pathname === "/api/health") {
       return json({
@@ -260,10 +263,12 @@ export default {
     }
 
     if (url.pathname === "/api/playlists" && method === "GET") {
+      await ensurePlaylistSchema(env);
       return json(await getPlaylists(env));
     }
 
     if (url.pathname === "/api/playlists" && method === "POST") {
+      await ensurePlaylistSchema(env);
       const body = await request.json();
       if (!body.screeningId) return json({error:"screeningId is required"},{status:400});
 
@@ -298,6 +303,7 @@ export default {
     }
 
     if (/^\/api\/playlists\/[^/]+\/items$/.test(url.pathname) && method === "POST") {
+      await ensurePlaylistSchema(env);
       const parts=url.pathname.split("/");
       const playlistId=decodeURIComponent(parts[3]);
       const body=await request.json();
@@ -349,5 +355,11 @@ export default {
 
     if (url.pathname.startsWith("/api/")) return json({error:"Not found"},{status:404});
     return env.ASSETS.fetch(request);
+    } catch (err) {
+      return json({
+        error: "CinemaOS Worker error",
+        detail: String(err?.message || err)
+      }, { status: 500 });
+    }
   }
 };
