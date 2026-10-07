@@ -115,3 +115,31 @@ CREATE TABLE IF NOT EXISTS kdm_requests (
   FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE,
   FOREIGN KEY (certificate_id) REFERENCES device_certificates(id) ON DELETE CASCADE
 );
+
+
+CREATE TABLE IF NOT EXISTS agent_nodes (
+  id TEXT PRIMARY KEY,
+  cinema_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  machine_name TEXT,
+  version TEXT,
+  token_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'OFFLINE',
+  last_seen_at TEXT,
+  capabilities_json TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_jobs (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  job_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED',
+  progress INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (agent_id) REFERENCES agent_nodes(id) ON DELETE CASCADE
+);
