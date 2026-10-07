@@ -88,6 +88,30 @@
     </form>
   </dialog>
 
-  <script src="./app.js"></script>
+  <script>
+    window.addEventListener("error",function(e){
+      if(document.querySelector("#authOverlay")) return;
+      const old=document.querySelector("#cinemaosStartupError");
+      if(old) return;
+      const box=document.createElement("div");
+      box.id="cinemaosStartupError";
+      box.style.cssText="position:fixed;inset:20px;z-index:99999;background:#11161e;color:#fff;border:1px solid #5b3038;border-radius:18px;padding:24px;font-family:system-ui;box-shadow:0 30px 100px #000";
+      box.innerHTML="<h2 style='margin-top:0'>CinemaOS startup error</h2><p id='startupErrorText'></p><button onclick='location.reload()' style='padding:10px 14px;border:0;border-radius:9px;background:#f48042;font-weight:700'>Reload</button>";
+      document.body.appendChild(box);
+      box.querySelector("#startupErrorText").textContent=e.message||"Unknown JavaScript error";
+    });
+    window.addEventListener("unhandledrejection",function(e){
+      if(document.querySelector("#authOverlay")) return;
+      const reason=e.reason && (e.reason.message||String(e.reason));
+      const box=document.querySelector("#cinemaosStartupError")||document.createElement("div");
+      if(!box.id){
+        box.id="cinemaosStartupError";
+        box.style.cssText="position:fixed;inset:20px;z-index:99999;background:#11161e;color:#fff;border:1px solid #5b3038;border-radius:18px;padding:24px;font-family:system-ui;box-shadow:0 30px 100px #000";
+        document.body.appendChild(box);
+      }
+      box.innerHTML="<h2 style='margin-top:0'>CinemaOS startup error</h2><p>"+String(reason||"Request failed")+"</p><button onclick='location.reload()' style='padding:10px 14px;border:0;border-radius:9px;background:#f48042;font-weight:700'>Reload</button>";
+    });
+  </script>
+  <script src="./app.js?v=f352f6d3" defer></script>
 </body>
 </html>
