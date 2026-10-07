@@ -312,6 +312,18 @@ async function ensureOperationsSchema(env){
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(agent_id,local_key),
       FOREIGN KEY (agent_id) REFERENCES agent_nodes(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS local_asset_assignments (
+      id TEXT PRIMARY KEY,
+      local_asset_id TEXT NOT NULL,
+      hall_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ASSIGNED',
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(local_asset_id,hall_id),
+      FOREIGN KEY (local_asset_id) REFERENCES agent_local_assets(id) ON DELETE CASCADE,
+      FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE
     )`
   ];
   for(const sql of statements) await env.DB.prepare(sql).run();
@@ -354,6 +366,18 @@ async function getLocalAssets(env){
     FROM agent_local_assets la
     JOIN agent_nodes a ON a.id=la.agent_id
     ORDER BY la.updated_at DESC
+  `).all();
+  return results||[];
+}
+
+async function getLocalAssignments(env){
+  await ensureOperationsSchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT a.*,la.title AS asset_title,h.name AS hall_name
+    FROM local_asset_assignments a
+    JOIN agent_local_assets la ON la.id=a.local_asset_id
+    JOIN halls h ON h.id=a.hall_id
+    ORDER BY a.updated_at DESC
   `).all();
   return results||[];
 }
@@ -537,7 +561,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.16.0",
+        ok:true,service:"CinemaOS API",version:"0.16.1",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -647,7 +671,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.16.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.16.1",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -839,6 +863,37 @@ export default {
 
     if (url.pathname === "/api/local-assets" && method === "GET") {
       return json(await getLocalAssets(env));
+    }
+
+    if (url.pathname === "/api/local-asset-assignments" && method === "GET") {
+      return json(await getLocalAssignments(env));
+    }
+
+    if (url.pathname === "/api/local-asset-assignments" && method === "POST") {
+      await ensureOperationsSchema(env);
+      const body=await request.json();
+      const localAssetId=String(body.localAssetId||"");
+      const hallId=String(body.hallId||"");
+      if(!localAssetId||!hallId) return json({error:"localAssetId and hallId are required"},{status:400});
+      const id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO local_asset_assignments (id,local_asset_id,hall_id,status,notes,updated_at)
+        VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(local_asset_id,hall_id) DO UPDATE SET
+          status=excluded.status,notes=excluded.notes,updated_at=CURRENT_TIMESTAMP
+      `).bind(id,localAssetId,hallId,"ASSIGNED",String(body.notes||"")).run();
+      return json({ok:true,id},{status:201});
+    }
+
+    if (/^\/api\/local-asset-assignments\/[^/]+$/.test(url.pathname) && method === "PUT") {
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      const body=await request.json();
+      const allowed=["ASSIGNED","READY_FOR_INGEST","INGESTING","INGESTED","FAILED"];
+      const status=String(body.status||"ASSIGNED");
+      if(!allowed.includes(status)) return json({error:"Invalid assignment status"},{status:400});
+      await env.DB.prepare("UPDATE local_asset_assignments SET status=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .bind(status,String(body.notes||""),id).run();
+      return json({ok:true});
     }
 
     if (url.pathname === "/api/agent/local-assets/report" && method === "POST") {
