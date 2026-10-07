@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],agents:[],agentTransfers:[],hallDevices:[],distributors:[],distributionDeliveries:[],users:[],auth:{configured:false,user:null,setupSecretConfigured:false},storageStatus:null,transfers:[],downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],agents:[],agentTransfers:[],hallDevices:[],distributors:[],distributionDeliveries:[],localAssets:[],localAssignments:[],users:[],auth:{configured:false,user:null,setupSecretConfigured:false},storageStatus:null,transfers:[],downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -110,6 +110,8 @@ async function refresh(){
   state.hallDevices=await api.get("/api/hall-devices");
   state.distributors=await api.get("/api/distributors");
   state.distributionDeliveries=await api.get("/api/distribution-deliveries");
+  state.localAssets=await api.get("/api/local-assets");
+  state.localAssignments=await api.get("/api/local-asset-assignments");
   state.users=state.auth.user?.role==="administrator"?await api.get("/api/users"):[];
   subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
@@ -244,7 +246,28 @@ document.querySelector("#newDistributor").onclick=()=>openDistributorModal();
 document.querySelector("#newDelivery").onclick=()=>openDeliveryModal()
 },
 
-automation(){content.innerHTML='<div class="grid two"><article class="card"><div class="card-head"><h2>Show Automation</h2><span class="pill warn">DEMO</span></div><p class="subtle">Future CinemaOS Agent commands for lights, curtains, audio and projector control.</p></article><article class="card"><h2>Hardware Adapter Layer</h2><p class="subtle">Real integration will use documented and authorized vendor interfaces.</p></article></div>'},
+storage(){
+const total=state.localAssets.reduce((s,a)=>s+Number(a.bytes_total||0),0);
+content.innerHTML=
+'<div class="grid stats">'+
+'<article class="card stat"><span>Local DCPs</span><strong>'+state.localAssets.length+'</strong><small>Registered by Agent</small></article>'+
+'<article class="card stat"><span>Local data</span><strong>'+fmtBytes(total)+'</strong><small>Detected package size</small></article>'+
+'<article class="card stat"><span>Assignments</span><strong>'+state.localAssignments.length+'</strong><small>Hall destinations</small></article>'+
+'<article class="card stat"><span>Online Agents</span><strong>'+state.agents.filter(a=>a.status==="ONLINE").length+'</strong><small>Persistent workers</small></article>'+
+'</div>'+
+'<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Central Storage</h2><p class="muted">Unpacked DCP folders detected by CinemaOS Agent.</p></div><span class="pill good">LIVE</span></div>'+
+'<div class="table-wrap"><table class="table"><thead><tr><th>Package</th><th>Size</th><th>Runtime</th><th>Structure</th><th>Encryption</th><th>Hall</th><th></th></tr></thead><tbody>'+
+(state.localAssets.map(a=>{
+  const assignments=state.localAssignments.filter(x=>x.local_asset_id===a.id);
+  const halls=assignments.map(x=>x.hall_name+' • '+x.status).join("<br>")||"Not assigned";
+  const complete=a.has_assetmap&&a.has_pkl&&a.has_cpl;
+  return '<tr><td><b>'+a.title+'</b><br><small>'+a.local_path_label+' • '+a.machine_name+'</small></td><td>'+fmtBytes(a.bytes_total)+'</td><td>'+Math.round(Number(a.runtime_seconds||0)/60)+' min</td><td>'+(complete?'ASSETMAP + PKL + CPL':'Partial DCP')+'</td><td>'+(a.encrypted?'<span class="pill warn">ENCRYPTED</span>':'<span class="pill good">OPEN</span>')+'</td><td>'+halls+'</td><td><button class="primary" data-assign-local="'+a.id+'">Assign to hall</button></td></tr>'
+}).join("")||'<tr><td colspan="7">No unpacked DCP folders registered yet.</td></tr>')+
+'</tbody></table></div><div class="notice" style="margin-top:16px">Drop an unpacked DCP folder into C:\\ProgramData\\CinemaOSAgent\\Inbox. CinemaOS reads the package metadata directly; no ZIP is required.</div></div>'+
+'<div class="card"><div class="card-head"><div><h2>Hall ingest preparation</h2><p class="muted">Assignments prepare a legal ingest workflow. No vendor command is sent until a documented adapter is configured for that hall.</p></div></div>'+
+(state.localAssignments.map(x=>'<div class="queue-row"><div><b>'+x.asset_title+'</b><span>'+x.hall_name+' • '+x.status+'</span><span>'+(x.notes||"No notes")+'</span></div>'+statusPill(x.status)+'</div>').join("")||'<div class="empty">No hall assignments yet.</div>')+'</div>'
+},
+automation(){content.innerHTML='<div class="grid two"><article class="card"><div class="card-head"><h2>Show Automation</h2><span class="pill warn">DEMO</span></div><p class="subtle">CinemaOS Agent adapter layer for lights, curtains, audio processors, projectors and IMS/server commands.</p></article><article class="card"><h2>Hardware Adapter Layer</h2><p class="subtle">Adapters will use documented and authorized vendor interfaces only.</p></article></div>'},
 security(){
 content.innerHTML=
 '<div class="grid two">'+
@@ -506,6 +529,16 @@ await api.send("/api/playlist-items/"+b.id,"PUT",{position:pa,itemType:b.item_ty
 state.playlists=await api.get("/api/playlists");pages.playlists()
 }
 
+function openAssignLocalModal(assetId){
+const asset=state.localAssets.find(a=>a.id===assetId);
+if(!asset||!state.halls.length){alert("No DCP package or hall available.");return}
+modal("Assign DCP to hall",'<div class="form-grid"><label>Package<input value="'+asset.title+'" readonly></label><label>Hall<select name="hallId">'+state.halls.map(h=>'<option value="'+h.id+'">'+h.name+'</option>').join("")+'</select></label><label style="grid-column:1/-1">Notes<textarea name="notes" rows="3" placeholder="Optional ingest notes"></textarea></label></div>',async fd=>{
+await api.send("/api/local-asset-assignments","POST",{localAssetId:asset.id,hallId:fd.get("hallId"),notes:fd.get("notes")});
+state.localAssignments=await api.get("/api/local-asset-assignments");
+pages.storage()
+});
+}
+
 function openCertificateModal(){
 if(!state.halls.length){alert("Add a hall first.");return}
 modal("Add device certificate",'<div class="form-grid"><label>Hall<select name="hallId">'+state.halls.map(h=>'<option value="'+h.id+'">'+h.name+'</option>').join("")+'</select></label><label>Device name<input name="deviceName" required placeholder="IMS / Media Block"></label><label>Manufacturer<input name="manufacturer" placeholder="Barco / Dolby / GDC / Qube"></label><label>Model<input name="model"></label><label>Serial number<input name="serialNumber"></label><label>SHA-256 fingerprint<input name="fingerprintSha256"></label><label>Valid from<input name="validFrom" type="date"></label><label>Valid until<input name="validUntil" type="date"></label><label style="grid-column:1/-1">Public certificate (PEM)<textarea name="certificatePem" rows="8" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label></div>',async fd=>{
@@ -621,6 +654,7 @@ if(ct){
   }
   return;
 }
+const al=e.target.closest("[data-assign-local]");if(al){openAssignLocalModal(al.dataset.assignLocal);return}
 const sa=e.target.closest("[data-send-agent]");
 if(sa){
   const asset=state.contentAssets.find(x=>x.id===sa.dataset.sendAgent);
@@ -656,12 +690,14 @@ movieForm.addEventListener("submit",async e=>{e.preventDefault();const fd=new Fo
 
 async function liveRefresh(){
 try{
-  const [agents,agentTransfers,assets]=await Promise.all([
-    api.get("/api/agents"),api.get("/api/agent-transfers"),api.get("/api/content-assets")
+  const [agents,agentTransfers,assets,localAssets,localAssignments]=await Promise.all([
+    api.get("/api/agents"),api.get("/api/agent-transfers"),api.get("/api/content-assets"),
+    api.get("/api/local-assets"),api.get("/api/local-asset-assignments")
   ]);
   state.agents=agents;state.agentTransfers=agentTransfers;state.contentAssets=assets;
+  state.localAssets=localAssets;state.localAssignments=localAssignments;
   const page=document.querySelector(".nav-item.active")?.dataset.page;
-  if(["delivery","contentLibrary","settings","dashboard"].includes(page)) (pages[page]||pages.dashboard)();
+  if(["delivery","contentLibrary","storage","settings","dashboard"].includes(page)) (pages[page]||pages.dashboard)();
 }catch{}
 }
 (async()=>{
