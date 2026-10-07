@@ -342,6 +342,104 @@ async function getDeliveries(env){
   return results||[];
 }
 
+async function ensureAuthSchema(env){
+  const statements=[
+    `CREATE TABLE IF NOT EXISTS app_users (
+      id TEXT PRIMARY KEY,
+      cinema_id TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      display_name TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_login_at TEXT,
+      FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS app_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE
+    )`
+  ];
+  for(const sql of statements) await env.DB.prepare(sql).run();
+}
+
+function bytesToHex(bytes){return [...bytes].map(b=>b.toString(16).padStart(2,"0")).join("")}
+function randomHex(bytes=32){const a=new Uint8Array(bytes);crypto.getRandomValues(a);return bytesToHex(a)}
+function hexToBytes(hex){const a=new Uint8Array(hex.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(hex.slice(i*2,i*2+2),16);return a}
+
+async function passwordHash(password,saltHex){
+  const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(password),"PBKDF2",false,["deriveBits"]);
+  const bits=await crypto.subtle.deriveBits(
+    {name:"PBKDF2",hash:"SHA-256",salt:hexToBytes(saltHex),iterations:210000},
+    key,256
+  );
+  return bytesToHex(new Uint8Array(bits));
+}
+
+function parseCookies(request){
+  const out={};
+  for(const part of (request.headers.get("cookie")||"").split(";")){
+    const i=part.indexOf("=");if(i<0)continue;
+    out[part.slice(0,i).trim()]=decodeURIComponent(part.slice(i+1).trim());
+  }
+  return out;
+}
+
+async function currentUser(request,env){
+  await ensureAuthSchema(env);
+  const token=parseCookies(request).cinemaos_session;
+  if(!token)return null;
+  const hash=await sha256Hex(token);
+  const row=await env.DB.prepare(`
+    SELECT u.id,u.email,u.display_name,u.role_id,u.status,s.id AS session_id,s.expires_at
+    FROM app_sessions s JOIN app_users u ON u.id=s.user_id
+    WHERE s.token_hash=? LIMIT 1
+  `).bind(hash).first();
+  if(!row||row.status!=="ACTIVE")return null;
+  if(new Date(row.expires_at).getTime()<=Date.now()){
+    await env.DB.prepare("DELETE FROM app_sessions WHERE id=?").bind(row.session_id).run().catch(()=>{});
+    return null;
+  }
+  await env.DB.prepare("UPDATE app_sessions SET last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(row.session_id).run().catch(()=>{});
+  return row;
+}
+
+async function authConfigured(env){
+  await ensureAuthSchema(env);
+  const r=await env.DB.prepare("SELECT COUNT(*) AS c FROM app_users").first();
+  return Number(r?.c||0)>0;
+}
+
+function sessionCookie(token,maxAge=43200){
+  return "cinemaos_session="+encodeURIComponent(token)+"; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age="+maxAge;
+}
+
+function roleCan(role,path,method){
+  if(role==="administrator")return true;
+  if(method==="GET")return true;
+  if(role==="manager") return /^\/api\/(movies|screenings|playlists|playlist-items|content-assets|distribution-deliveries)/.test(path);
+  if(role==="projectionist") return /^\/api\/(playlists|playlist-items|content-assets|kdm-requests)/.test(path);
+  if(role==="technician") return /^\/api\/(halls|hall-devices|certificates)/.test(path);
+  if(role==="distributor") return /^\/api\/(distribution-deliveries|content-assets|storage\/multipart)/.test(path);
+  return false;
+}
+
+async function getUsers(env){
+  await ensureAuthSchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT id,email,display_name,role_id,status,created_at,last_login_at
+    FROM app_users ORDER BY display_name
+  `).all();
+  return results||[];
+}
+
 async function tableCount(env) {
   if (!env.DB) return null;
   const row = await env.DB.prepare(
@@ -405,10 +503,107 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.13.0",
+        ok:true,service:"CinemaOS API",version:"0.14.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
+    }
+
+    if (url.pathname === "/api/auth/status" && method === "GET") {
+      const configured=await authConfigured(env);
+      const user=configured?await currentUser(request,env):null;
+      return json({configured,user:user?{id:user.id,email:user.email,displayName:user.display_name,role:user.role_id}:null,setupSecretConfigured:Boolean(env.ADMIN_SETUP_KEY)});
+    }
+
+    if (url.pathname === "/api/auth/setup-admin" && method === "POST") {
+      await ensureAuthSchema(env);
+      if(await authConfigured(env)) return json({error:"Administrator is already configured."},{status:409});
+      if(!env.ADMIN_SETUP_KEY) return json({error:"ADMIN_SETUP_KEY is not configured in Worker secrets."},{status:503});
+      const body=await request.json();
+      if(String(body.setupKey||"")!==String(env.ADMIN_SETUP_KEY)) return json({error:"Invalid setup key"},{status:403});
+      const email=String(body.email||"").trim().toLowerCase();
+      const displayName=String(body.displayName||"Administrator").trim();
+      const password=String(body.password||"");
+      if(!email.includes("@")) return json({error:"Valid email is required"},{status:400});
+      if(password.length<10) return json({error:"Password must be at least 10 characters"},{status:400});
+      const salt=randomHex(16),hash=await passwordHash(password,salt),id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO app_users (id,cinema_id,email,display_name,role_id,password_salt,password_hash,status)
+        VALUES (?,?,?,?,?,?,?,'ACTIVE')
+      `).bind(id,"BG-VT-PALACE-001",email,displayName,"administrator",salt,hash).run();
+      return json({ok:true,id},{status:201});
+    }
+
+    if (url.pathname === "/api/auth/login" && method === "POST") {
+      await ensureAuthSchema(env);
+      const body=await request.json();
+      const email=String(body.email||"").trim().toLowerCase();
+      const password=String(body.password||"");
+      const u=await env.DB.prepare("SELECT * FROM app_users WHERE email=? LIMIT 1").bind(email).first();
+      if(!u||u.status!=="ACTIVE") return json({error:"Invalid email or password"},{status:401});
+      const hash=await passwordHash(password,u.password_salt);
+      if(hash!==u.password_hash) return json({error:"Invalid email or password"},{status:401});
+      const token=randomHex(32),tokenHash=await sha256Hex(token),sid=crypto.randomUUID();
+      const expires=new Date(Date.now()+12*60*60*1000).toISOString();
+      await env.DB.prepare("INSERT INTO app_sessions (id,user_id,token_hash,expires_at) VALUES (?,?,?,?)").bind(sid,u.id,tokenHash,expires).run();
+      await env.DB.prepare("UPDATE app_users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?").bind(u.id).run();
+      return json({ok:true,user:{id:u.id,email:u.email,displayName:u.display_name,role:u.role_id}},{
+        headers:{"set-cookie":sessionCookie(token)}
+      });
+    }
+
+    if (url.pathname === "/api/auth/logout" && method === "POST") {
+      const token=parseCookies(request).cinemaos_session;
+      if(token){
+        const hash=await sha256Hex(token);
+        await env.DB.prepare("DELETE FROM app_sessions WHERE token_hash=?").bind(hash).run().catch(()=>{});
+      }
+      return json({ok:true},{headers:{"set-cookie":"cinemaos_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"}});
+    }
+
+    if (url.pathname === "/api/users" && method === "GET") {
+      const user=await currentUser(request,env);
+      if(!user||user.role_id!=="administrator") return json({error:"Administrator access required"},{status:403});
+      return json(await getUsers(env));
+    }
+
+    if (url.pathname === "/api/users" && method === "POST") {
+      const user=await currentUser(request,env);
+      if(!user||user.role_id!=="administrator") return json({error:"Administrator access required"},{status:403});
+      const body=await request.json();
+      const email=String(body.email||"").trim().toLowerCase(),password=String(body.password||"");
+      const role=String(body.role||"projectionist");
+      if(!["administrator","manager","projectionist","technician","distributor"].includes(role)) return json({error:"Invalid role"},{status:400});
+      if(!email.includes("@")||password.length<10) return json({error:"Valid email and password of at least 10 characters are required"},{status:400});
+      const salt=randomHex(16),hash=await passwordHash(password,salt),id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO app_users (id,cinema_id,email,display_name,role_id,password_salt,password_hash,status)
+        VALUES (?,?,?,?,?,?,?,'ACTIVE')
+      `).bind(id,"BG-VT-PALACE-001",email,String(body.displayName||email),role,salt,hash).run();
+      return json({ok:true,id},{status:201});
+    }
+
+    if (/^\/api\/users\/[^/]+$/.test(url.pathname) && method === "PUT") {
+      const user=await currentUser(request,env);
+      if(!user||user.role_id!=="administrator") return json({error:"Administrator access required"},{status:403});
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      const body=await request.json();
+      const role=String(body.role||"projectionist"),status=String(body.status||"ACTIVE");
+      if(!["administrator","manager","projectionist","technician","distributor"].includes(role)) return json({error:"Invalid role"},{status:400});
+      if(!["ACTIVE","DISABLED"].includes(status)) return json({error:"Invalid status"},{status:400});
+      await env.DB.prepare("UPDATE app_users SET display_name=?,role_id=?,status=? WHERE id=?")
+        .bind(String(body.displayName||""),role,status,id).run();
+      return json({ok:true});
+    }
+
+    // Once the first administrator exists, protect all normal API mutations.
+    // Agent authentication endpoints and auth endpoints use their own credentials.
+    if (url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/agent") &&
+        !url.pathname.startsWith("/api/auth/") && url.pathname!=="/api/health" &&
+        method!=="GET" && await authConfigured(env)) {
+      const user=await currentUser(request,env);
+      if(!user) return json({error:"Authentication required"},{status:401});
+      if(!roleCan(user.role_id,url.pathname,method)) return json({error:"Your role does not allow this action"},{status:403});
     }
 
     if (url.pathname === "/api/bootstrap" && method === "GET") {
@@ -418,7 +613,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.13.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.14.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
