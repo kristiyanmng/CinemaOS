@@ -143,3 +143,77 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (agent_id) REFERENCES agent_nodes(id) ON DELETE CASCADE
 );
+
+
+CREATE TABLE IF NOT EXISTS agent_transfers (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT 'UPLOAD',
+  status TEXT NOT NULL DEFAULT 'QUEUED',
+  progress INTEGER NOT NULL DEFAULT 0,
+  bytes_done INTEGER NOT NULL DEFAULT 0,
+  bytes_total INTEGER NOT NULL DEFAULT 0,
+  speed_bps INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (agent_id) REFERENCES agent_nodes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS hall_devices (
+  id TEXT PRIMARY KEY,
+  hall_id TEXT NOT NULL,
+  device_type TEXT NOT NULL,
+  manufacturer TEXT,
+  model TEXT,
+  name TEXT NOT NULL,
+  address TEXT,
+  status TEXT NOT NULL DEFAULT 'UNKNOWN',
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS content_asset_metadata (
+  asset_id TEXT PRIMARY KEY,
+  cpl_id TEXT,
+  annotation_text TEXT,
+  edit_rate TEXT,
+  duration_frames INTEGER,
+  runtime_seconds INTEGER,
+  encrypted INTEGER NOT NULL DEFAULT 0,
+  has_assetmap INTEGER NOT NULL DEFAULT 0,
+  has_pkl INTEGER NOT NULL DEFAULT 0,
+  has_cpl INTEGER NOT NULL DEFAULT 0,
+  package_files INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (asset_id) REFERENCES content_assets(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS distributors (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  contact_email TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS distribution_deliveries (
+  id TEXT PRIMARY KEY,
+  distributor_id TEXT,
+  content_asset_id TEXT,
+  destination_cinema_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED',
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (distributor_id) REFERENCES distributors(id) ON DELETE SET NULL,
+  FOREIGN KEY (content_asset_id) REFERENCES content_assets(id) ON DELETE SET NULL,
+  FOREIGN KEY (destination_cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS app_roles (
+  id TEXT PRIMARY KEY,
+  role_name TEXT NOT NULL UNIQUE,
+  permissions_json TEXT NOT NULL
+);
