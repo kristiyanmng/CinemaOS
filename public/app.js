@@ -662,8 +662,28 @@ try{
 }catch{}
 }
 (async()=>{
-restoreTransfers();
-await loadAuthStatus();
-if(state.auth.configured&&!state.auth.user){showLogin();return}
-await refresh();applyUserUi();renderTransferTray();openPage("dashboard");setInterval(liveRefresh,5000)
+try{
+  restoreTransfers();
+  try{
+    await loadAuthStatus();
+  }catch(err){
+    state.auth={configured:false,user:null,setupSecretConfigured:false};
+    console.error("Auth status failed:",err);
+  }
+  if(state.auth.configured&&!state.auth.user){showLogin();return}
+  await refresh();
+  applyUserUi();
+  renderTransferTray();
+  openPage("dashboard");
+  setInterval(liveRefresh,5000);
+}catch(err){
+  console.error("CinemaOS startup failed:",err);
+  const box=document.createElement("div");
+  box.id="cinemaosStartupError";
+  box.style.cssText="position:fixed;inset:20px;z-index:99999;background:#11161e;color:#fff;border:1px solid #5b3038;border-radius:18px;padding:24px;font-family:system-ui;box-shadow:0 30px 100px #000";
+  box.innerHTML="<h2 style='margin-top:0'>CinemaOS startup error</h2><p></p><button style='padding:10px 14px;border:0;border-radius:9px;background:#f48042;font-weight:700'>Reload</button>";
+  box.querySelector("p").textContent=err?.message||String(err);
+  box.querySelector("button").onclick=()=>location.reload();
+  document.body.appendChild(box);
+}
 })();
