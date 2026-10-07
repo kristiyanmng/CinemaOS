@@ -11,7 +11,18 @@ const movieForm=document.querySelector("#movieForm");
 
 const api={
   async get(path){const r=await fetch(path);const d=await r.json();if(!r.ok)throw new Error(d.error||"Request failed");return d},
-  async send(path,method,body){const r=await fetch(path,{method,headers:{"content-type":"application/json"},body:body?JSON.stringify(body):undefined});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Request failed");return d}
+  async send(path,method,body){
+    const r=await fetch(path,{
+      method,
+      headers:{"content-type":"application/json"},
+      body:body?JSON.stringify(body):undefined
+    });
+    const text=await r.text();
+    let d={};
+    try{d=text?JSON.parse(text):{}}catch{d={error:text||("HTTP "+r.status)}}
+    if(!r.ok)throw new Error(d.detail ? (d.error+": "+d.detail) : (d.error||("HTTP "+r.status)));
+    return d
+  }
 };
 
 const statusPill=s=>'<span class="pill '+((s==="READY"||s==="ONLINE")?"good":s==="PLAYING"?"playing":s==="WAITING_CONTENT"?"warn":"")+'">'+s+'</span>';
