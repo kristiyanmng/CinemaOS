@@ -1,8 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cinemaos",
+  "main": "src/worker.js",
   "compatibility_date": "2026-10-07",
   "assets": {
-    "directory": "./"
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
   }
 }
