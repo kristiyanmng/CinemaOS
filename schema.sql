@@ -242,3 +242,28 @@ CREATE TABLE IF NOT EXISTS app_sessions (
   last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE
 );
+
+
+CREATE TABLE IF NOT EXISTS agent_local_assets (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  local_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  package_type TEXT NOT NULL DEFAULT 'DCP_FOLDER',
+  local_path_label TEXT,
+  bytes_total INTEGER NOT NULL DEFAULT 0,
+  files_total INTEGER NOT NULL DEFAULT 0,
+  cpl_id TEXT,
+  annotation_text TEXT,
+  edit_rate TEXT,
+  runtime_seconds INTEGER NOT NULL DEFAULT 0,
+  encrypted INTEGER NOT NULL DEFAULT 0,
+  has_assetmap INTEGER NOT NULL DEFAULT 0,
+  has_pkl INTEGER NOT NULL DEFAULT 0,
+  has_cpl INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'READY',
+  metadata_json TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(agent_id,local_key),
+  FOREIGN KEY (agent_id) REFERENCES agent_nodes(id) ON DELETE CASCADE
+);
