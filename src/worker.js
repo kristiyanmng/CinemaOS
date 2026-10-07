@@ -22,6 +22,51 @@ async function seed(env) {
   ]);
 }
 
+async function ensurePlaylistSchema(env) {
+  await env.DB.exec(`
+    CREATE TABLE IF NOT EXISTS playlists (
+      id TEXT PRIMARY KEY,
+      screening_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (screening_id) REFERENCES screenings(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS playlist_items (
+      id TEXT PRIMARY KEY,
+      playlist_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      item_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      source_ref TEXT,
+      duration_seconds INTEGER NOT NULL DEFAULT 0,
+      cue_json TEXT,
+      FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
+    );
+  `);
+}
+
+async function getPlaylists(env) {
+  const { results } = await env.DB.prepare(`
+    SELECT p.id,p.screening_id,p.name,p.created_at,
+           s.starts_at,h.name AS hall_name,m.title AS movie_title,mv.version_name
+    FROM playlists p
+    JOIN screenings s ON s.id=p.screening_id
+    JOIN halls h ON h.id=s.hall_id
+    JOIN movie_versions mv ON mv.id=s.movie_version_id
+    JOIN movies m ON m.id=mv.movie_id
+    ORDER BY s.starts_at ASC
+  `).all();
+
+  for (const p of results || []) {
+    const items = await env.DB.prepare(
+      "SELECT id,playlist_id,position,item_type,title,source_ref,duration_seconds,cue_json FROM playlist_items WHERE playlist_id=? ORDER BY position ASC"
+    ).bind(p.id).all();
+    p.items = items.results || [];
+  }
+  return results || [];
+}
+
 async function tableCount(env) {
   if (!env.DB) return null;
   const row = await env.DB.prepare(
@@ -81,10 +126,11 @@ export default {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
     await seed(env);
+    await ensurePlaylistSchema(env);
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.5.0",
+        ok:true,service:"CinemaOS API",version:"0.6.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -97,7 +143,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.5.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.6.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -196,6 +242,89 @@ export default {
     if (url.pathname.startsWith("/api/screenings/") && method === "DELETE") {
       const id=decodeURIComponent(url.pathname.split("/").pop());
       await env.DB.prepare("DELETE FROM screenings WHERE id=?").bind(id).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname === "/api/playlists" && method === "GET") {
+      return json(await getPlaylists(env));
+    }
+
+    if (url.pathname === "/api/playlists" && method === "POST") {
+      const body = await request.json();
+      if (!body.screeningId) return json({error:"screeningId is required"},{status:400});
+
+      const exists = await env.DB.prepare("SELECT id FROM playlists WHERE screening_id=?").bind(body.screeningId).first();
+      if (exists) return json({error:"This screening already has a playlist."},{status:409});
+
+      const id = crypto.randomUUID();
+      await env.DB.prepare(
+        "INSERT INTO playlists (id,screening_id,name) VALUES (?,?,?)"
+      ).bind(id,body.screeningId,String(body.name||"Show Playlist")).run();
+
+      const screening = await env.DB.prepare(`
+        SELECT m.title,mv.version_name
+        FROM screenings s
+        JOIN movie_versions mv ON mv.id=s.movie_version_id
+        JOIN movies m ON m.id=mv.movie_id
+        WHERE s.id=?
+      `).bind(body.screeningId).first();
+
+      if (screening) {
+        await env.DB.prepare(
+          "INSERT INTO playlist_items (id,playlist_id,position,item_type,title,source_ref,duration_seconds,cue_json) VALUES (?,?,?,?,?,?,?,?)"
+        ).bind(
+          crypto.randomUUID(),id,100,"MOVIE",
+          screening.title+" — "+screening.version_name,
+          body.movieVersionId||null,0,
+          JSON.stringify({lights:0})
+        ).run();
+      }
+
+      return json({ok:true,id},{status:201});
+    }
+
+    if (/^\/api\/playlists\/[^/]+\/items$/.test(url.pathname) && method === "POST") {
+      const parts=url.pathname.split("/");
+      const playlistId=decodeURIComponent(parts[3]);
+      const body=await request.json();
+      const row=await env.DB.prepare("SELECT COALESCE(MAX(position),0) AS max_pos FROM playlist_items WHERE playlist_id=?")
+        .bind(playlistId).first();
+      const position=Number(row?.max_pos||0)+10;
+      const id=crypto.randomUUID();
+
+      await env.DB.prepare(
+        "INSERT INTO playlist_items (id,playlist_id,position,item_type,title,source_ref,duration_seconds,cue_json) VALUES (?,?,?,?,?,?,?,?)"
+      ).bind(
+        id,playlistId,position,String(body.itemType||"AD"),String(body.title||"Untitled"),
+        body.sourceRef||null,Number(body.durationSeconds||0),
+        JSON.stringify(body.cue||{})
+      ).run();
+
+      return json({ok:true,id},{status:201});
+    }
+
+    if (url.pathname.startsWith("/api/playlist-items/") && method === "PUT") {
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      const body=await request.json();
+      await env.DB.prepare(
+        "UPDATE playlist_items SET position=?,item_type=?,title=?,duration_seconds=?,cue_json=? WHERE id=?"
+      ).bind(
+        Number(body.position||0),String(body.itemType||"AD"),String(body.title||"Untitled"),
+        Number(body.durationSeconds||0),JSON.stringify(body.cue||{}),id
+      ).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname.startsWith("/api/playlist-items/") && method === "DELETE") {
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      await env.DB.prepare("DELETE FROM playlist_items WHERE id=?").bind(id).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname.startsWith("/api/playlists/") && method === "DELETE") {
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      await env.DB.prepare("DELETE FROM playlist_items WHERE playlist_id=?").bind(id).run();
+      await env.DB.prepare("DELETE FROM playlists WHERE id=?").bind(id).run();
       return json({ok:true});
     }
 
