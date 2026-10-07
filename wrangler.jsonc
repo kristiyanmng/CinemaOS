@@ -7,5 +7,12 @@
     "directory": "./public",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cinemaos-db",
+      "database_id": "c252d3d8-7198-40ce-a913-2af144399b63"
+    }
+  ]
 }
