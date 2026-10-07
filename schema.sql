@@ -81,3 +81,37 @@ CREATE TABLE IF NOT EXISTS content_assets (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
 );
+
+
+CREATE TABLE IF NOT EXISTS device_certificates (
+  id TEXT PRIMARY KEY,
+  cinema_id TEXT NOT NULL,
+  hall_id TEXT NOT NULL,
+  device_name TEXT NOT NULL,
+  manufacturer TEXT,
+  model TEXT,
+  serial_number TEXT,
+  certificate_pem TEXT,
+  fingerprint_sha256 TEXT,
+  valid_from TEXT,
+  valid_until TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE,
+  FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS kdm_requests (
+  id TEXT PRIMARY KEY,
+  movie_version_id TEXT NOT NULL,
+  hall_id TEXT NOT NULL,
+  certificate_id TEXT NOT NULL,
+  valid_from TEXT NOT NULL,
+  valid_until TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'READY_TO_REQUEST',
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (movie_version_id) REFERENCES movie_versions(id) ON DELETE CASCADE,
+  FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE,
+  FOREIGN KEY (certificate_id) REFERENCES device_certificates(id) ON DELETE CASCADE
+);
