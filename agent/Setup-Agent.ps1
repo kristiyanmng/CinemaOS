@@ -29,14 +29,16 @@ if (-not (Test-Path $configPath)) {
   "agentToken": ""
 }
 '@
-  [System.IO.File]::WriteAllText($configPath, $config, New-Object System.Text.UTF8Encoding($false))
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($configPath, $config, $utf8NoBom)
   Write-Host "Created config.json" -ForegroundColor Green
 } else {
   Write-Host "config.json already exists - keeping existing file." -ForegroundColor Yellow
 }
 
 if (-not (Test-Path $queuePath)) {
-  [System.IO.File]::WriteAllText($queuePath, "[]", New-Object System.Text.UTF8Encoding($false))
+  if (-not $utf8NoBom) { $utf8NoBom = New-Object System.Text.UTF8Encoding($false) }
+  [System.IO.File]::WriteAllText($queuePath, "[]", $utf8NoBom)
   Write-Host "Created queue.json" -ForegroundColor Green
 }
 
