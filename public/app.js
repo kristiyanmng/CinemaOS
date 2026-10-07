@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],agents:[],agentTransfers:[],hallDevices:[],distributors:[],distributionDeliveries:[],storageStatus:null,transfers:[],downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],agents:[],agentTransfers:[],hallDevices:[],distributors:[],distributionDeliveries:[],users:[],auth:{configured:false,user:null,setupSecretConfigured:false},storageStatus:null,transfers:[],downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -35,6 +35,38 @@ function restoreTransfers(){
       return t;
     });
   }catch{state.transfers=[]}
+}
+
+async function loadAuthStatus(){
+  state.auth=await api.get("/api/auth/status");
+  return state.auth;
+}
+
+function initials(name){
+  return String(name||"U").split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]?.toUpperCase()).join("")||"U";
+}
+
+function showLogin(){
+  let ov=document.querySelector("#authOverlay");
+  if(!ov){
+    ov=document.createElement("div");ov.id="authOverlay";ov.className="auth-overlay";
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML='<div class="auth-card"><div class="brand-mark">C</div><h1>CinemaOS</h1><p>Sign in to CinemaOS Control Center</p><form id="loginForm"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">Sign in</button><small id="loginError"></small></form></div>';
+  ov.querySelector("#loginForm").onsubmit=async e=>{
+    e.preventDefault();const fd=new FormData(e.currentTarget);
+    try{
+      await api.send("/api/auth/login","POST",{email:fd.get("email"),password:fd.get("password")});
+      ov.remove();await loadAuthStatus();await refresh();applyUserUi();openPage("dashboard");
+    }catch(err){ov.querySelector("#loginError").textContent=err.message}
+  };
+}
+
+function applyUserUi(){
+  const chip=document.querySelector(".user-chip");
+  if(chip)chip.textContent=state.auth.user?initials(state.auth.user.displayName):"KM";
+  const logout=document.querySelector("#logoutBtn");
+  if(logout)logout.style.display=state.auth.user?"inline-flex":"none";
 }
 
 const api={
@@ -75,6 +107,7 @@ async function refresh(){
   state.hallDevices=await api.get("/api/hall-devices");
   state.distributors=await api.get("/api/distributors");
   state.distributionDeliveries=await api.get("/api/distribution-deliveries");
+  state.users=state.auth.user?.role==="administrator"?await api.get("/api/users"):[];
   subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
 
@@ -225,7 +258,14 @@ document.querySelector("#newKdmRequest").onclick=()=>openKdmRequestModal()
 
 ai(){content.innerHTML='<div class="card"><div class="card-head"><h2>AI Assistant</h2><span class="pill ai">BETA</span></div><p class="subtle">Next: schedule optimization using real screening and hall data.</p></div>'},
 reports(){content.innerHTML='<div class="grid three"><article class="card"><span class="muted">Screenings</span><div class="kpi">'+state.screenings.length+'</div></article><article class="card"><span class="muted">Movies</span><div class="kpi">'+state.movies.length+'</div></article><article class="card"><span class="muted">Halls</span><div class="kpi">'+state.halls.length+'</div></article></div>'},
-settings(){content.innerHTML='<div class="grid two"><article class="card"><h2>Cinema profile</h2><div class="field"><label>Cinema ID<input value="'+(state.cinema?.id||"")+'" readonly></label></div><div class="field"><label>Name<input value="'+(state.cinema?.name||"")+'" readonly></label></div></article><article class="card"><h2>Database</h2><p class="subtle">Cloudflare D1 connected.</p></article></div><div class="card"><div class="card-head"><div><h2>CinemaOS Agents</h2><p class="muted">Persistent local transfer workers.</p></div><span class="pill '+(state.agents.some(a=>a.status==="ONLINE")?"good":"warn")+'">'+state.agents.length+' REGISTERED</span></div>'+(state.agents.map(a=>'<div class="queue-row"><div><b>'+a.name+'</b><span>'+((a.machine_name||"Unknown PC"))+' • v'+(a.version||"?")+'</span><span>Last seen: '+(a.last_seen_at||"never")+'</span></div>'+statusPill(a.status)+'</div>').join("")||'<div class="empty">No CinemaOS Agent registered yet.</div>')+'<div class="notice" style="margin-top:14px">Agent enrollment is protected by the Worker secret AGENT_ENROLLMENT_KEY. Role foundation is ready (Administrator, Manager, Projectionist, Technician, Distributor). Remote file jobs remain locked until secure user authentication is activated.</div></div>'}
+settings(){
+const authCard=state.auth.configured
+?('<div class="card"><div class="card-head"><div><h2>Users & Roles</h2><p class="muted">Signed in as '+(state.auth.user?.displayName||"User")+' • '+(state.auth.user?.role||"")+'</p></div>'+(state.auth.user?.role==="administrator"?'<button class="primary" id="newUser">+ Add user</button>':'')+'</div>'+(state.users.map(u=>'<div class="queue-row"><div><b>'+u.display_name+'</b><span>'+u.email+' • '+u.role_id+'</span><span>'+u.status+' • Last login: '+fmtDate(u.last_login_at)+'</span></div>'+statusPill(u.status)+'</div>').join("")||'<div class="empty">No users loaded.</div>')+'</div>')
+:('<div class="card"><div class="card-head"><div><h2>Secure administrator setup</h2><p class="muted">No CinemaOS user exists yet.</p></div><span class="pill warn">SETUP REQUIRED</span></div><div class="notice">Create the first administrator using the Worker secret ADMIN_SETUP_KEY. No default password is used.</div><button class="primary" id="setupAdmin" style="margin-top:14px">Create first administrator</button></div>');
+content.innerHTML='<div class="grid two"><article class="card"><h2>Cinema profile</h2><div class="field"><label>Cinema ID<input value="'+(state.cinema?.id||"")+'" readonly></label></div><div class="field"><label>Name<input value="'+(state.cinema?.name||"")+'" readonly></label></div></article><article class="card"><h2>Database</h2><p class="subtle">Cloudflare D1 connected.</p><p class="subtle">Authentication: '+(state.auth.configured?"ENABLED":"NOT CONFIGURED")+'</p></article></div>'+authCard+'<div class="card"><div class="card-head"><div><h2>CinemaOS Agents</h2><p class="muted">Persistent local transfer workers.</p></div><span class="pill '+(state.agents.some(a=>a.status==="ONLINE")?"good":"warn")+'">'+state.agents.length+' REGISTERED</span></div>'+(state.agents.map(a=>'<div class="queue-row"><div><b>'+a.name+'</b><span>'+((a.machine_name||"Unknown PC"))+' • v'+(a.version||"?")+'</span><span>Last seen: '+fmtDate(a.last_seen_at)+'</span></div>'+statusPill(a.status)+'</div>').join("")||'<div class="empty">No CinemaOS Agent registered yet.</div>')+'<div class="notice" style="margin-top:14px">Agent enrollment is independent from user sessions. Remote file jobs remain permission-controlled.</div></div>';
+const sa=document.querySelector("#setupAdmin");if(sa)sa.onclick=()=>openSetupAdminModal();
+const nu=document.querySelector("#newUser");if(nu)nu.onclick=()=>openNewUserModal()
+}
 };
 
 function renderMovies(){
@@ -414,6 +454,20 @@ const dlg=[...document.querySelectorAll("dialog.dialog")].pop();
 if(dlg){const save=dlg.querySelector('button[type="submit"]');if(save)save.style.display="none"}
 }
 
+function openSetupAdminModal(){
+modal("Create first administrator",'<div class="form-grid"><label>Display name<input name="displayName" required value="CinemaOS Administrator"></label><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" minlength="10" required></label><label>ADMIN_SETUP_KEY<input name="setupKey" type="password" required></label></div>',async fd=>{
+await api.send("/api/auth/setup-admin","POST",{displayName:fd.get("displayName"),email:fd.get("email"),password:fd.get("password"),setupKey:fd.get("setupKey")});
+await loadAuthStatus();pages.settings();showLogin()
+});
+}
+
+function openNewUserModal(){
+modal("Add CinemaOS user",'<div class="form-grid"><label>Name<input name="displayName" required></label><label>Email<input name="email" type="email" required></label><label>Role<select name="role"><option value="manager">Manager</option><option value="projectionist">Projectionist</option><option value="technician">Technician</option><option value="distributor">Distributor</option><option value="administrator">Administrator</option></select></label><label>Temporary password<input name="password" type="password" minlength="10" required></label></div>',async fd=>{
+await api.send("/api/users","POST",{displayName:fd.get("displayName"),email:fd.get("email"),role:fd.get("role"),password:fd.get("password")});
+state.users=await api.get("/api/users");pages.settings()
+});
+}
+
 function openDeviceModal(){
 if(!state.halls.length){alert("Add a hall first.");return}
 modal("Add hall device",'<div class="form-grid"><label>Hall<select name="hallId">'+state.halls.map(h=>'<option value="'+h.id+'">'+h.name+'</option>').join("")+'</select></label><label>Type<select name="deviceType"><option>PROJECTOR</option><option>IMS_SERVER</option><option>AUDIO</option><option>AUTOMATION</option><option>OTHER</option></select></label><label>Name<input name="name" required placeholder="Barco ICMP / Dolby CP950"></label><label>Manufacturer<input name="manufacturer"></label><label>Model<input name="model"></label><label>IP / address<input name="address" placeholder="192.168.x.x"></label><label>Status<select name="status"><option>UNKNOWN</option><option>ONLINE</option><option>OFFLINE</option></select></label><label>Notes<input name="notes"></label></div>',async fd=>{
@@ -522,6 +576,7 @@ state.screenings=await api.get("/api/screenings");pages.schedule()
 function openPage(name){nav.forEach(n=>n.classList.toggle("active",n.dataset.page===name));title.textContent=nav.find(n=>n.dataset.page===name)?.textContent||"CinemaOS";if(name!=="dashboard")subtitle.textContent="CinemaOS Control Center";(pages[name]||pages.dashboard)()}
 nav.forEach(btn=>btn.addEventListener("click",()=>openPage(btn.dataset.page)));
 document.querySelector("#quickMovie").onclick=()=>movieDialog.showModal();
+document.querySelector("#logoutBtn").onclick=async()=>{await api.send("/api/auth/logout","POST",{});state.auth={configured:true,user:null};showLogin()};
 
 document.addEventListener("click",async e=>{
 const rt=e.target.closest("[data-resume-transfer]");
@@ -594,4 +649,9 @@ try{
   if(["delivery","contentLibrary","settings","dashboard"].includes(page)) (pages[page]||pages.dashboard)();
 }catch{}
 }
-(async()=>{restoreTransfers();await refresh();renderTransferTray();openPage("dashboard");setInterval(liveRefresh,5000)})();
+(async()=>{
+restoreTransfers();
+await loadAuthStatus();
+if(state.auth.configured&&!state.auth.user){showLogin();return}
+await refresh();applyUserUi();renderTransferTray();openPage("dashboard");setInterval(liveRefresh,5000)
+})();
