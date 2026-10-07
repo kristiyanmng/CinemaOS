@@ -19,7 +19,10 @@ const api={
     });
     const text=await r.text();
     let d={};
-    try{d=text?JSON.parse(text):{}}catch{d={error:text||("HTTP "+r.status)}}
+    try{d=text?JSON.parse(text):{}}catch{
+      const looksHtml=/<!doctype|<html/i.test(text||"");
+      d={error:looksHtml ? ("Cloudflare Worker error (HTTP "+r.status+")") : (text||("HTTP "+r.status))}
+    }
     if(!r.ok)throw new Error(d.detail ? (d.error+": "+d.detail) : (d.error||("HTTP "+r.status)));
     return d
   }
