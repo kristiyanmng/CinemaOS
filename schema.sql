@@ -66,3 +66,18 @@ CREATE TABLE IF NOT EXISTS playlist_items (
   cue_json TEXT,
   FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
 );
+
+
+CREATE TABLE IF NOT EXISTS content_assets (
+  id TEXT PRIMARY KEY,
+  cinema_id TEXT NOT NULL,
+  asset_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  duration_seconds INTEGER NOT NULL DEFAULT 0,
+  format TEXT,
+  language TEXT,
+  status TEXT NOT NULL DEFAULT 'READY',
+  storage_ref TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
+);
