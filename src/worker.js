@@ -90,9 +90,15 @@ async function ensureContentSchema(env) {
 
 async function getContentAssets(env) {
   await ensureContentSchema(env);
-  const { results } = await env.DB.prepare(
-    "SELECT id,cinema_id,asset_type,title,duration_seconds,format,language,status,storage_ref,created_at FROM content_assets ORDER BY created_at DESC"
-  ).all();
+  await ensureOperationsSchema(env);
+  const { results } = await env.DB.prepare(`
+    SELECT ca.id,ca.cinema_id,ca.asset_type,ca.title,ca.duration_seconds,ca.format,ca.language,ca.status,ca.storage_ref,ca.created_at,
+           md.cpl_id,md.annotation_text,md.edit_rate,md.duration_frames,md.runtime_seconds,md.encrypted,
+           md.has_assetmap,md.has_pkl,md.has_cpl,md.package_files,md.metadata_json
+    FROM content_assets ca
+    LEFT JOIN content_asset_metadata md ON md.asset_id=ca.id
+    ORDER BY ca.created_at DESC
+  `).all();
   return results || [];
 }
 
@@ -215,6 +221,127 @@ async function getAgents(env){
   return results||[];
 }
 
+async function ensureOperationsSchema(env){
+  const statements=[
+    `CREATE TABLE IF NOT EXISTS agent_transfers (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      direction TEXT NOT NULL DEFAULT 'UPLOAD',
+      status TEXT NOT NULL DEFAULT 'QUEUED',
+      progress INTEGER NOT NULL DEFAULT 0,
+      bytes_done INTEGER NOT NULL DEFAULT 0,
+      bytes_total INTEGER NOT NULL DEFAULT 0,
+      speed_bps INTEGER NOT NULL DEFAULT 0,
+      message TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (agent_id) REFERENCES agent_nodes(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS hall_devices (
+      id TEXT PRIMARY KEY,
+      hall_id TEXT NOT NULL,
+      device_type TEXT NOT NULL,
+      manufacturer TEXT,
+      model TEXT,
+      name TEXT NOT NULL,
+      address TEXT,
+      status TEXT NOT NULL DEFAULT 'UNKNOWN',
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS content_asset_metadata (
+      asset_id TEXT PRIMARY KEY,
+      cpl_id TEXT,
+      annotation_text TEXT,
+      edit_rate TEXT,
+      duration_frames INTEGER,
+      runtime_seconds INTEGER,
+      encrypted INTEGER NOT NULL DEFAULT 0,
+      has_assetmap INTEGER NOT NULL DEFAULT 0,
+      has_pkl INTEGER NOT NULL DEFAULT 0,
+      has_cpl INTEGER NOT NULL DEFAULT 0,
+      package_files INTEGER NOT NULL DEFAULT 0,
+      metadata_json TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (asset_id) REFERENCES content_assets(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS distributors (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      contact_email TEXT,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS distribution_deliveries (
+      id TEXT PRIMARY KEY,
+      distributor_id TEXT,
+      content_asset_id TEXT,
+      destination_cinema_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'QUEUED',
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (distributor_id) REFERENCES distributors(id) ON DELETE SET NULL,
+      FOREIGN KEY (content_asset_id) REFERENCES content_assets(id) ON DELETE SET NULL,
+      FOREIGN KEY (destination_cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS app_roles (
+      id TEXT PRIMARY KEY,
+      role_name TEXT NOT NULL UNIQUE,
+      permissions_json TEXT NOT NULL
+    )`
+  ];
+  for(const sql of statements) await env.DB.prepare(sql).run();
+  const roles=[
+    ["administrator","Administrator",["*"]],
+    ["manager","Manager",["movies","schedule","playlists","content","reports"]],
+    ["projectionist","Projectionist",["content","playlists","halls","kdm"]],
+    ["technician","Technician",["halls","devices","agents"]],
+    ["distributor","Distributor",["distribution","content_upload","kdm_request"]]
+  ];
+  for(const r of roles){
+    await env.DB.prepare("INSERT OR IGNORE INTO app_roles (id,role_name,permissions_json) VALUES (?,?,?)")
+      .bind(r[0],r[1],JSON.stringify(r[2])).run();
+  }
+}
+
+async function getAgentTransfers(env){
+  await ensureAgentSchema(env); await ensureOperationsSchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT t.*,a.name AS agent_name,a.machine_name
+    FROM agent_transfers t JOIN agent_nodes a ON a.id=t.agent_id
+    ORDER BY t.updated_at DESC
+  `).all();
+  return results||[];
+}
+
+async function getHallDevices(env){
+  await ensureOperationsSchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT d.*,h.name AS hall_name FROM hall_devices d
+    JOIN halls h ON h.id=d.hall_id ORDER BY h.name,d.device_type,d.name
+  `).all();
+  return results||[];
+}
+
+async function getDistributors(env){
+  await ensureOperationsSchema(env);
+  const {results}=await env.DB.prepare("SELECT * FROM distributors ORDER BY name").all();
+  return results||[];
+}
+
+async function getDeliveries(env){
+  await ensureOperationsSchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT dd.*,d.name AS distributor_name,ca.title AS content_title
+    FROM distribution_deliveries dd
+    LEFT JOIN distributors d ON d.id=dd.distributor_id
+    LEFT JOIN content_assets ca ON ca.id=dd.content_asset_id
+    ORDER BY dd.created_at DESC
+  `).all();
+  return results||[];
+}
+
 async function tableCount(env) {
   if (!env.DB) return null;
   const row = await env.DB.prepare(
@@ -278,7 +405,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.12.0",
+        ok:true,service:"CinemaOS API",version:"0.13.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -291,7 +418,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.12.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.13.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -481,6 +608,96 @@ export default {
       return json({ok:true});
     }
 
+    if (url.pathname === "/api/agent-transfers" && method === "GET") {
+      return json(await getAgentTransfers(env));
+    }
+
+    if (url.pathname === "/api/agent/transfers/report" && method === "POST") {
+      const agent=await authenticateAgent(request,env);
+      if(!agent) return json({error:"Unauthorized agent"},{status:401});
+      await ensureOperationsSchema(env);
+      const body=await request.json();
+      const id=String(body.id||crypto.randomUUID());
+      await env.DB.prepare(`
+        INSERT INTO agent_transfers
+        (id,agent_id,file_name,direction,status,progress,bytes_done,bytes_total,speed_bps,message,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+          status=excluded.status,progress=excluded.progress,bytes_done=excluded.bytes_done,
+          bytes_total=excluded.bytes_total,speed_bps=excluded.speed_bps,message=excluded.message,
+          updated_at=CURRENT_TIMESTAMP
+      `).bind(
+        id,agent.id,String(body.fileName||"Unknown"),String(body.direction||"UPLOAD"),
+        String(body.status||"QUEUED"),Math.max(0,Math.min(100,Number(body.progress||0))),
+        Number(body.bytesDone||0),Number(body.bytesTotal||0),Number(body.speedBps||0),String(body.message||"")
+      ).run();
+      return json({ok:true,id});
+    }
+
+    if (url.pathname === "/api/hall-devices" && method === "GET") return json(await getHallDevices(env));
+
+    if (url.pathname === "/api/hall-devices" && method === "POST") {
+      await ensureOperationsSchema(env);
+      const body=await request.json();
+      if(!body.hallId||!body.deviceType||!String(body.name||"").trim()) return json({error:"hallId, deviceType and name are required"},{status:400});
+      const id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO hall_devices (id,hall_id,device_type,manufacturer,model,name,address,status,notes)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).bind(id,body.hallId,String(body.deviceType),String(body.manufacturer||""),String(body.model||""),String(body.name).trim(),String(body.address||""),String(body.status||"UNKNOWN"),String(body.notes||"")).run();
+      return json({ok:true,id},{status:201});
+    }
+
+    if (url.pathname.startsWith("/api/hall-devices/") && method === "DELETE") {
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      await env.DB.prepare("DELETE FROM hall_devices WHERE id=?").bind(id).run();
+      return json({ok:true});
+    }
+
+    if (/^\/api\/content-assets\/[^/]+\/metadata$/.test(url.pathname) && method === "POST") {
+      await ensureOperationsSchema(env);
+      const assetId=decodeURIComponent(url.pathname.split("/")[3]);
+      const body=await request.json();
+      await env.DB.prepare(`
+        INSERT INTO content_asset_metadata
+        (asset_id,cpl_id,annotation_text,edit_rate,duration_frames,runtime_seconds,encrypted,has_assetmap,has_pkl,has_cpl,package_files,metadata_json,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(asset_id) DO UPDATE SET
+          cpl_id=excluded.cpl_id,annotation_text=excluded.annotation_text,edit_rate=excluded.edit_rate,
+          duration_frames=excluded.duration_frames,runtime_seconds=excluded.runtime_seconds,encrypted=excluded.encrypted,
+          has_assetmap=excluded.has_assetmap,has_pkl=excluded.has_pkl,has_cpl=excluded.has_cpl,
+          package_files=excluded.package_files,metadata_json=excluded.metadata_json,updated_at=CURRENT_TIMESTAMP
+      `).bind(
+        assetId,String(body.cplId||""),String(body.annotationText||""),String(body.editRate||""),
+        Number(body.durationFrames||0),Number(body.runtimeSeconds||0),body.encrypted?1:0,
+        body.hasAssetMap?1:0,body.hasPkl?1:0,body.hasCpl?1:0,Number(body.packageFiles||0),JSON.stringify(body)
+      ).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname === "/api/distributors" && method === "GET") return json(await getDistributors(env));
+    if (url.pathname === "/api/distributors" && method === "POST") {
+      await ensureOperationsSchema(env);
+      const body=await request.json();
+      if(!String(body.name||"").trim()) return json({error:"Distributor name is required"},{status:400});
+      const id=crypto.randomUUID();
+      await env.DB.prepare("INSERT INTO distributors (id,name,contact_email,status) VALUES (?,?,?,?)")
+        .bind(id,String(body.name).trim(),String(body.contactEmail||""),"ACTIVE").run();
+      return json({ok:true,id},{status:201});
+    }
+
+    if (url.pathname === "/api/distribution-deliveries" && method === "GET") return json(await getDeliveries(env));
+    if (url.pathname === "/api/distribution-deliveries" && method === "POST") {
+      await ensureOperationsSchema(env);
+      const body=await request.json();
+      const id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO distribution_deliveries (id,distributor_id,content_asset_id,destination_cinema_id,status,notes)
+        VALUES (?,?,?,?,?,?)
+      `).bind(id,body.distributorId||null,body.contentAssetId||null,"BG-VT-PALACE-001","QUEUED",String(body.notes||"")).run();
+      return json({ok:true,id},{status:201});
+    }
+
     if (url.pathname === "/api/storage/status" && method === "GET") {
       return json({
         configured: Boolean(env.CONTENT),
@@ -654,7 +871,7 @@ export default {
         await env.DB.prepare(
           "INSERT INTO playlist_items (id,playlist_id,position,item_type,title,source_ref,duration_seconds,cue_json) VALUES (?,?,?,?,?,?,?,?)"
         ).bind(
-          crypto.randomUUID(),id,100,"MOVIE",
+          crypto.randomUUID(),id,1000,"MOVIE",
           screening.title+" — "+screening.version_name,
           body.movieVersionId||null,0,
           JSON.stringify({lights:0})
@@ -669,9 +886,15 @@ export default {
       const parts=url.pathname.split("/");
       const playlistId=decodeURIComponent(parts[3]);
       const body=await request.json();
-      const row=await env.DB.prepare("SELECT COALESCE(MAX(position),0) AS max_pos FROM playlist_items WHERE playlist_id=?")
-        .bind(playlistId).first();
-      const position=Number(row?.max_pos||0)+10;
+      const itemType=String(body.itemType||"AD");
+      let position;
+      if(itemType==="MOVIE"){
+        position=1000;
+      }else{
+        const row=await env.DB.prepare("SELECT COALESCE(MAX(position),0) AS max_pos FROM playlist_items WHERE playlist_id=? AND position<1000")
+          .bind(playlistId).first();
+        position=Math.min(990,Number(row?.max_pos||0)+10);
+      }
       const id=crypto.randomUUID();
 
       await env.DB.prepare(
