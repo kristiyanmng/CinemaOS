@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],storageStatus:null,downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -37,6 +37,7 @@ async function refresh(){
   Object.assign(state,{cinema:d.cinema,halls:d.halls||[],movies:d.movies||[],screenings:d.screenings||[]});
   state.playlists=await api.get("/api/playlists");
   state.contentAssets=await api.get("/api/content-assets");
+  state.storageStatus=await api.get("/api/storage/status");
   subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
 
@@ -66,11 +67,12 @@ ${state.halls.map(h=>'<div class="hall-row"><div><b>'+h.name+'</b><span>'+h.seat
 </div>`},
 contentLibrary(){
 content.innerHTML=
-'<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Content Library</h2><p class="muted">Reusable trailers, advertisements and other preshow content.</p></div><button class="primary" id="newContentAsset">+ Add content</button></div></div>'+
+'<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Content Library</h2><p class="muted">Trailers, advertisements and other preshow files.</p></div><div style="display:flex;gap:8px"><button class="ghost" id="newContentAsset">+ Metadata only</button><button class="primary" id="uploadContentAsset">Upload file</button></div></div><div class="notice">R2 Storage: '+(state.storageStatus?.configured?"CONNECTED":"NOT CONFIGURED")+' • Direct browser upload is intended for trailers, ads and other smaller assets.</div></div>'+
 '<div class="page-grid">'+
-(state.contentAssets.map(a=>'<article class="movie-card"><div class="card-head"><h3>'+a.title+'</h3><span class="pill '+(a.asset_type==="TRAILER"?"playing":a.asset_type==="AD"?"warn":"")+'">'+a.asset_type+'</span></div><p>'+(a.duration_seconds||0)+' sec • '+(a.format||"DCP")+'</p><div class="meta"><span>'+(a.language||"No language")+'</span><span>'+a.status+'</span></div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-edit-content="'+a.id+'">Edit</button><button class="danger" data-delete-content="'+a.id+'">Delete</button></div></article>').join("")||'<div class="empty">No reusable content yet.</div>')+
+(state.contentAssets.map(a=>'<article class="movie-card"><div class="card-head"><h3>'+a.title+'</h3><span class="pill '+(a.asset_type==="TRAILER"?"playing":a.asset_type==="AD"?"warn":"")+'">'+a.asset_type+'</span></div><p>'+(a.duration_seconds||0)+' sec • '+(a.format||"DCP")+'</p><div class="meta"><span>'+(a.language||"No language")+'</span><span>'+a.status+'</span><span>'+(a.storage_ref?"R2 FILE":"METADATA")+'</span></div><div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">'+(a.storage_ref?'<button class="ghost" data-preview-content="'+a.id+'">Preview / Open</button>':'')+'<button class="ghost" data-edit-content="'+a.id+'">Edit</button><button class="danger" data-delete-content="'+a.id+'">Delete</button></div></article>').join("")||'<div class="empty">No reusable content yet.</div>')+
 '</div>';
-document.querySelector("#newContentAsset").onclick=()=>openContentAssetModal()
+document.querySelector("#newContentAsset").onclick=()=>openContentAssetModal();
+document.querySelector("#uploadContentAsset").onclick=()=>openUploadContentModal()
 },
 movies(){
 content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Movie Library</h2><p class="muted">Movies and all available versions.</p></div><button class="primary" id="newMovie">+ Add movie</button></div></div><div class="page-grid" id="moviesGrid"></div>';
@@ -106,6 +108,51 @@ function renderMovies(){
 const grid=document.querySelector("#moviesGrid");
 if(!state.movies.length){grid.innerHTML='<div class="empty">No movies yet.</div>';return}
 grid.innerHTML=state.movies.map(m=>'<article class="movie-card"><div class="card-head"><h3>'+m.title+'</h3><span class="pill good">'+(m.versions?.length||0)+' VERSION(S)</span></div><p>'+(m.distributor||"No distributor")+'</p><div class="meta">'+(m.versions||[]).map(v=>'<span>'+v.name+' • '+(v.format||"DCP")+' • '+(v.audio||"")+'</span>').join("")+'</div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-add-version="'+m.id+'">+ Version</button><button class="danger" data-delete-movie="'+m.id+'">Delete</button></div></article>').join("")
+}
+
+function uploadWithProgress(file,url,onProgress){
+return new Promise((resolve,reject)=>{
+  const xhr=new XMLHttpRequest();
+  xhr.open("POST",url,true);
+  xhr.setRequestHeader("content-type",file.type||"application/octet-stream");
+  xhr.upload.onprogress=e=>{if(e.lengthComputable)onProgress(Math.round((e.loaded/e.total)*100))};
+  xhr.onload=()=>{
+    let data={};
+    try{data=JSON.parse(xhr.responseText||"{}")}catch{}
+    if(xhr.status>=200&&xhr.status<300)resolve(data);
+    else reject(new Error(data.detail?(data.error+": "+data.detail):(data.error||("HTTP "+xhr.status))));
+  };
+  xhr.onerror=()=>reject(new Error("Upload failed"));
+  xhr.send(file);
+});
+}
+
+function openUploadContentModal(){
+if(!state.storageStatus?.configured){alert("R2 is not connected yet.");return}
+const d=document.createElement("dialog");d.className="dialog";
+d.innerHTML='<form><div class="dialog-head"><div><h2>Upload content file</h2><p>For trailers, ads and other preshow assets.</p></div><button type="button" class="icon-btn" data-close>×</button></div><div class="form-grid"><label>Type<select name="assetType"><option value="TRAILER">Trailer</option><option value="AD">Advertisement</option><option value="OTHER">Other</option></select></label><label>Title<input name="title" required></label><label>Duration (sec)<input name="duration" type="number" min="0" value="30"></label><label>Language<input name="language" placeholder="bg / en"></label><label style="grid-column:1/-1">File<input name="file" type="file" required></label></div><div class="download" style="margin-top:18px"><div class="download-top"><b id="uploadLabel">Waiting</b><span id="uploadPct">0%</span></div><div class="progress"><i id="uploadBar" style="width:0%"></i></div></div><div class="dialog-actions"><button type="button" class="ghost" data-close>Cancel</button><button type="submit" class="primary">Upload</button></div></form>';
+document.body.appendChild(d);
+d.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>d.close());
+d.addEventListener("close",()=>d.remove());
+d.querySelector("form").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const fd=new FormData(e.currentTarget);
+  const file=fd.get("file");
+  if(!(file instanceof File)||!file.size)return;
+  if(file.size>95*1024*1024){alert("This direct browser uploader is limited to about 95 MB. Larger cinema files will use CinemaOS Agent.");return}
+  const submit=e.currentTarget.querySelector('button[type="submit"]');submit.disabled=true;
+  const bar=d.querySelector("#uploadBar"),pct=d.querySelector("#uploadPct"),label=d.querySelector("#uploadLabel");
+  try{
+    label.textContent="Uploading "+file.name;
+    const qs=new URLSearchParams({type:fd.get("assetType"),title:fd.get("title"),filename:file.name});
+    const uploaded=await uploadWithProgress(file,"/api/storage/upload?"+qs.toString(),p=>{bar.style.width=p+"%";pct.textContent=p+"%"});
+    label.textContent="Saving metadata";
+    await api.send("/api/content-assets","POST",{assetType:fd.get("assetType"),title:fd.get("title"),durationSeconds:Number(fd.get("duration")),format:file.type||"File",language:fd.get("language"),storageRef:uploaded.key});
+    state.contentAssets=await api.get("/api/content-assets");
+    d.close();pages.contentLibrary();
+  }catch(err){submit.disabled=false;alert(err.message)}
+});
+d.showModal();
 }
 
 function openContentAssetModal(asset){
@@ -184,6 +231,7 @@ const ds=e.target.closest("[data-delete-screening]");if(ds&&confirm("Delete this
 const apiBtn=e.target.closest("[data-add-playlist-item]");if(apiBtn)openPlaylistItemModal(apiBtn.dataset.addPlaylistItem,apiBtn.dataset.itemType);
 const di=e.target.closest("[data-delete-item]");if(di&&confirm("Delete this playlist item?")){await api.send("/api/playlist-items/"+encodeURIComponent(di.dataset.deleteItem),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
 const dp=e.target.closest("[data-delete-playlist]");if(dp&&confirm("Delete this playlist?")){await api.send("/api/playlists/"+encodeURIComponent(dp.dataset.deletePlaylist),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
+const pc=e.target.closest("[data-preview-content]");if(pc){const a=state.contentAssets.find(x=>x.id===pc.dataset.previewContent);if(a?.storage_ref)window.open("/api/storage/object/"+encodeURIComponent(a.storage_ref),"_blank")}
 const ec=e.target.closest("[data-edit-content]");if(ec)openContentAssetModal(state.contentAssets.find(a=>a.id===ec.dataset.editContent));
 const dc=e.target.closest("[data-delete-content]");if(dc&&confirm("Delete this content item?")){await api.send("/api/content-assets/"+encodeURIComponent(dc.dataset.deleteContent),"DELETE");state.contentAssets=await api.get("/api/content-assets");pages.contentLibrary()}
 });
