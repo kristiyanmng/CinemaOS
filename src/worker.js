@@ -96,6 +96,69 @@ async function getContentAssets(env) {
   return results || [];
 }
 
+async function ensureSecuritySchema(env) {
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS device_certificates (
+      id TEXT PRIMARY KEY,
+      cinema_id TEXT NOT NULL,
+      hall_id TEXT NOT NULL,
+      device_name TEXT NOT NULL,
+      manufacturer TEXT,
+      model TEXT,
+      serial_number TEXT,
+      certificate_pem TEXT,
+      fingerprint_sha256 TEXT,
+      valid_from TEXT,
+      valid_until TEXT,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE,
+      FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS kdm_requests (
+      id TEXT PRIMARY KEY,
+      movie_version_id TEXT NOT NULL,
+      hall_id TEXT NOT NULL,
+      certificate_id TEXT NOT NULL,
+      valid_from TEXT NOT NULL,
+      valid_until TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'READY_TO_REQUEST',
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (movie_version_id) REFERENCES movie_versions(id) ON DELETE CASCADE,
+      FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE,
+      FOREIGN KEY (certificate_id) REFERENCES device_certificates(id) ON DELETE CASCADE
+    )`
+  ];
+  for(const sql of statements) await env.DB.prepare(sql).run();
+}
+
+async function getCertificates(env) {
+  await ensureSecuritySchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT dc.*,h.name AS hall_name
+    FROM device_certificates dc
+    JOIN halls h ON h.id=dc.hall_id
+    ORDER BY h.name,dc.device_name
+  `).all();
+  return results||[];
+}
+
+async function getKdmRequests(env) {
+  await ensureSecuritySchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT kr.*,h.name AS hall_name,dc.device_name,dc.fingerprint_sha256,
+           m.title AS movie_title,mv.version_name
+    FROM kdm_requests kr
+    JOIN halls h ON h.id=kr.hall_id
+    JOIN device_certificates dc ON dc.id=kr.certificate_id
+    JOIN movie_versions mv ON mv.id=kr.movie_version_id
+    JOIN movies m ON m.id=mv.movie_id
+    ORDER BY kr.created_at DESC
+  `).all();
+  return results||[];
+}
+
 async function tableCount(env) {
   if (!env.DB) return null;
   const row = await env.DB.prepare(
@@ -159,7 +222,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.10.0",
+        ok:true,service:"CinemaOS API",version:"0.11.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -172,7 +235,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.10.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.11.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -514,6 +577,88 @@ export default {
       const id=decodeURIComponent(url.pathname.split("/").pop());
       await env.DB.prepare("DELETE FROM playlist_items WHERE playlist_id=?").bind(id).run();
       await env.DB.prepare("DELETE FROM playlists WHERE id=?").bind(id).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname === "/api/certificates" && method === "GET") {
+      return json(await getCertificates(env));
+    }
+
+    if (url.pathname === "/api/certificates" && method === "POST") {
+      await ensureSecuritySchema(env);
+      const body=await request.json();
+      if(!body.hallId||!String(body.deviceName||"").trim()){
+        return json({error:"hallId and deviceName are required"},{status:400});
+      }
+      const id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO device_certificates
+        (id,cinema_id,hall_id,device_name,manufacturer,model,serial_number,certificate_pem,fingerprint_sha256,valid_from,valid_until,status)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(
+        id,"BG-VT-PALACE-001",body.hallId,String(body.deviceName).trim(),
+        String(body.manufacturer||""),String(body.model||""),String(body.serialNumber||""),
+        String(body.certificatePem||""),String(body.fingerprintSha256||""),
+        body.validFrom||null,body.validUntil||null,"ACTIVE"
+      ).run();
+      return json({ok:true,id},{status:201});
+    }
+
+    if (url.pathname.startsWith("/api/certificates/") && method === "DELETE") {
+      await ensureSecuritySchema(env);
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      const used=await env.DB.prepare("SELECT id FROM kdm_requests WHERE certificate_id=? LIMIT 1").bind(id).first();
+      if(used) return json({error:"Certificate is referenced by KDM requests."},{status:409});
+      await env.DB.prepare("DELETE FROM device_certificates WHERE id=?").bind(id).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname === "/api/kdm-requests" && method === "GET") {
+      return json(await getKdmRequests(env));
+    }
+
+    if (url.pathname === "/api/kdm-requests" && method === "POST") {
+      await ensureSecuritySchema(env);
+      const body=await request.json();
+      if(!body.versionId||!body.hallId||!body.validFrom||!body.validUntil){
+        return json({error:"versionId, hallId, validFrom and validUntil are required"},{status:400});
+      }
+
+      const cert=await env.DB.prepare(`
+        SELECT id,status,valid_from,valid_until
+        FROM device_certificates
+        WHERE hall_id=? AND status='ACTIVE'
+        ORDER BY created_at DESC
+        LIMIT 1
+      `).bind(body.hallId).first();
+
+      if(!cert) return json({
+        error:"No active device certificate for this hall",
+        detail:"Add/import the IMS/media block public certificate once in Certificates."
+      },{status:409});
+
+      const id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO kdm_requests
+        (id,movie_version_id,hall_id,certificate_id,valid_from,valid_until,status,notes)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).bind(
+        id,body.versionId,body.hallId,cert.id,body.validFrom,body.validUntil,
+        "READY_TO_REQUEST",String(body.notes||"")
+      ).run();
+
+      return json({ok:true,id,certificateId:cert.id,status:"READY_TO_REQUEST"},{status:201});
+    }
+
+    if (url.pathname.startsWith("/api/kdm-requests/") && method === "PUT") {
+      await ensureSecuritySchema(env);
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      const body=await request.json();
+      const allowed=["READY_TO_REQUEST","REQUESTED","RECEIVED","INSTALLED","EXPIRED","FAILED"];
+      const status=String(body.status||"READY_TO_REQUEST");
+      if(!allowed.includes(status)) return json({error:"Invalid KDM status"},{status:400});
+      await env.DB.prepare("UPDATE kdm_requests SET status=?,notes=? WHERE id=?")
+        .bind(status,String(body.notes||""),id).run();
       return json({ok:true});
     }
 
