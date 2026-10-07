@@ -159,7 +159,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.7.0",
+        ok:true,service:"CinemaOS API",version:"0.8.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -172,7 +172,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.7.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.8.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -285,6 +285,54 @@ export default {
     if (url.pathname.startsWith("/api/screenings/") && method === "DELETE") {
       const id=decodeURIComponent(url.pathname.split("/").pop());
       await env.DB.prepare("DELETE FROM screenings WHERE id=?").bind(id).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname === "/api/storage/status" && method === "GET") {
+      return json({
+        configured: Boolean(env.CONTENT),
+        provider: "Cloudflare R2",
+        bucketBinding: "CONTENT"
+      });
+    }
+
+    if (url.pathname === "/api/storage/upload" && method === "POST") {
+      if (!env.CONTENT) return json({
+        error:"R2 storage is not configured yet",
+        detail:"Create an R2 bucket and bind it as CONTENT."
+      },{status:503});
+
+      const contentType=request.headers.get("content-type")||"application/octet-stream";
+      const assetType=(url.searchParams.get("type")||"OTHER").toUpperCase();
+      const title=(url.searchParams.get("title")||"upload").trim();
+      const fileName=(url.searchParams.get("filename")||"file.bin").replace(/[^a-zA-Z0-9._-]/g,"_");
+      const assetId=crypto.randomUUID();
+      const key="cinema/BG-VT-PALACE-001/"+assetType.toLowerCase()+"/"+assetId+"/"+fileName;
+
+      await env.CONTENT.put(key, request.body, {
+        httpMetadata:{contentType},
+        customMetadata:{assetId,assetType,title}
+      });
+
+      return json({ok:true,key,assetId},{status:201});
+    }
+
+    if (url.pathname.startsWith("/api/storage/object/") && method === "GET") {
+      if (!env.CONTENT) return json({error:"R2 storage is not configured yet"},{status:503});
+      const key=decodeURIComponent(url.pathname.replace("/api/storage/object/",""));
+      const object=await env.CONTENT.get(key);
+      if(!object) return json({error:"Object not found"},{status:404});
+      const headers=new Headers();
+      object.writeHttpMetadata(headers);
+      headers.set("etag",object.httpEtag);
+      headers.set("cache-control","private, max-age=0, no-store");
+      return new Response(object.body,{headers});
+    }
+
+    if (url.pathname.startsWith("/api/storage/object/") && method === "DELETE") {
+      if (!env.CONTENT) return json({error:"R2 storage is not configured yet"},{status:503});
+      const key=decodeURIComponent(url.pathname.replace("/api/storage/object/",""));
+      await env.CONTENT.delete(key);
       return json({ok:true});
     }
 
