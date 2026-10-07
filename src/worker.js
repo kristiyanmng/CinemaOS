@@ -159,7 +159,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.9.0",
+        ok:true,service:"CinemaOS API",version:"0.10.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -172,7 +172,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.9.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.10.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -294,6 +294,48 @@ export default {
         provider: "Cloudflare R2",
         bucketBinding: "CONTENT"
       });
+    }
+
+    if (url.pathname === "/api/storage/multipart/init" && method === "POST") {
+      if (!env.CONTENT) return json({error:"R2 storage is not configured yet"},{status:503});
+      const body=await request.json();
+      const assetType=String(body.assetType||"OTHER").toUpperCase();
+      const title=String(body.title||"upload").trim();
+      const fileName=String(body.fileName||"package.zip").replace(/[^a-zA-Z0-9._-]/g,"_");
+      const assetId=crypto.randomUUID();
+      const key="cinema/BG-VT-PALACE-001/"+assetType.toLowerCase()+"/"+assetId+"/"+fileName;
+      const upload=await env.CONTENT.createMultipartUpload(key,{
+        httpMetadata:{contentType:String(body.contentType||"application/octet-stream")},
+        customMetadata:{assetId,assetType,title}
+      });
+      return json({ok:true,key,assetId,uploadId:upload.uploadId},{status:201});
+    }
+
+    if (url.pathname === "/api/storage/multipart/part" && method === "PUT") {
+      if (!env.CONTENT) return json({error:"R2 storage is not configured yet"},{status:503});
+      const key=url.searchParams.get("key");
+      const uploadId=url.searchParams.get("uploadId");
+      const partNumber=Number(url.searchParams.get("partNumber"));
+      if(!key||!uploadId||!partNumber) return json({error:"Missing multipart parameters"},{status:400});
+      const upload=env.CONTENT.resumeMultipartUpload(key,uploadId);
+      const part=await upload.uploadPart(partNumber,request.body);
+      return json({partNumber:part.partNumber,etag:part.etag});
+    }
+
+    if (url.pathname === "/api/storage/multipart/complete" && method === "POST") {
+      if (!env.CONTENT) return json({error:"R2 storage is not configured yet"},{status:503});
+      const body=await request.json();
+      const upload=env.CONTENT.resumeMultipartUpload(body.key,body.uploadId);
+      const object=await upload.complete(body.parts||[]);
+      return json({ok:true,key:body.key,etag:object.httpEtag||null});
+    }
+
+    if (url.pathname === "/api/storage/multipart/abort" && method === "POST") {
+      if (!env.CONTENT) return json({error:"R2 storage is not configured yet"},{status:503});
+      const body=await request.json();
+      const upload=env.CONTENT.resumeMultipartUpload(body.key,body.uploadId);
+      await upload.abort();
+      return json({ok:true});
     }
 
     if (url.pathname === "/api/storage/upload" && method === "POST") {
