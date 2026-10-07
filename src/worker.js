@@ -503,7 +503,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.14.0",
+        ok:true,service:"CinemaOS API",version:"0.15.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -613,7 +613,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.14.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.15.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -807,6 +807,24 @@ export default {
       return json(await getAgentTransfers(env));
     }
 
+    if (url.pathname === "/api/agent-jobs" && method === "POST") {
+      const configured=await authConfigured(env);
+      const user=configured?await currentUser(request,env):null;
+      if(configured&&!user) return json({error:"Authentication required"},{status:401});
+      const body=await request.json();
+      const agentId=String(body.agentId||"");
+      const type=String(body.jobType||"");
+      if(!agentId||!["DOWNLOAD_CONTENT"].includes(type)) return json({error:"Invalid agent job"},{status:400});
+      const agent=await env.DB.prepare("SELECT id FROM agent_nodes WHERE id=? LIMIT 1").bind(agentId).first();
+      if(!agent) return json({error:"Agent not found"},{status:404});
+      const id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO agent_jobs (id,agent_id,job_type,payload_json,status,progress,message)
+        VALUES (?,?,?,?,?,?,?)
+      `).bind(id,agentId,type,JSON.stringify(body.payload||{}),"QUEUED",0,"Waiting for Agent").run();
+      return json({ok:true,id},{status:201});
+    }
+
     if (url.pathname === "/api/agent/transfers/report" && method === "POST") {
       const agent=await authenticateAgent(request,env);
       if(!agent) return json({error:"Unauthorized agent"},{status:401});
@@ -966,6 +984,11 @@ export default {
 
     if (url.pathname.startsWith("/api/storage/object/") && method === "GET") {
       if (!env.CONTENT) return json({error:"R2 storage is not configured yet"},{status:503});
+      if(await authConfigured(env)){
+        const webUser=await currentUser(request,env);
+        const agentUser=await authenticateAgent(request,env);
+        if(!webUser&&!agentUser) return json({error:"Authentication required"},{status:401});
+      }
       const key=decodeURIComponent(url.pathname.replace("/api/storage/object/",""));
       const object=await env.CONTENT.get(key);
       if(!object) return json({error:"Object not found"},{status:404});
