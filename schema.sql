@@ -45,3 +45,24 @@ CREATE TABLE IF NOT EXISTS screenings (
   FOREIGN KEY (hall_id) REFERENCES halls(id) ON DELETE CASCADE,
   FOREIGN KEY (movie_version_id) REFERENCES movie_versions(id) ON DELETE CASCADE
 );
+
+
+CREATE TABLE IF NOT EXISTS playlists (
+  id TEXT PRIMARY KEY,
+  screening_id TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (screening_id) REFERENCES screenings(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS playlist_items (
+  id TEXT PRIMARY KEY,
+  playlist_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  item_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  source_ref TEXT,
+  duration_seconds INTEGER NOT NULL DEFAULT 0,
+  cue_json TEXT,
+  FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
+);
