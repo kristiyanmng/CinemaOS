@@ -411,7 +411,7 @@ function hexToBytes(hex){const a=new Uint8Array(hex.length/2);for(let i=0;i<a.le
 async function passwordHash(password,saltHex){
   const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(password),"PBKDF2",false,["deriveBits"]);
   const bits=await crypto.subtle.deriveBits(
-    {name:"PBKDF2",hash:"SHA-256",salt:hexToBytes(saltHex),iterations:210000},
+    {name:"PBKDF2",hash:"SHA-256",salt:hexToBytes(saltHex),iterations:100000},
     key,256
   );
   return bytesToHex(new Uint8Array(bits));
