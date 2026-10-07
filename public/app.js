@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -21,6 +21,7 @@ const fmtDate=x=>new Date(x).toLocaleString("bg-BG");
 async function refresh(){
   const d=await api.get("/api/bootstrap");
   Object.assign(state,{cinema:d.cinema,halls:d.halls||[],movies:d.movies||[],screenings:d.screenings||[]});
+  state.playlists=await api.get("/api/playlists");
   subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
 
@@ -58,7 +59,17 @@ content.innerHTML='<div class="card"><div class="card-head"><h2>Schedule</h2><bu
 (state.screenings.map(s=>'<tr><td>'+fmtDate(s.starts_at)+'</td><td>'+s.hall_name+'</td><td>'+s.movie_title+'</td><td>'+s.version_name+'</td><td>'+statusPill(s.status)+'</td><td><button class="danger" data-delete-screening="'+s.id+'">Delete</button></td></tr>').join("")||'<tr><td colspan="6">No screenings yet.</td></tr>')+
 '</tbody></table></div></div>';
 document.querySelector("#newScreening").onclick=()=>openScreeningModal()},
-playlists(){content.innerHTML='<div class="grid two"><article class="card"><h2>Show Playlist</h2><p class="subtle">Следващият модул ще свърже реклами, трейлъри, филм и automation cues към конкретна прожекция.</p></article><article class="card"><h2>Automation cues</h2><div class="meta"><span>PRE-SHOW 70%</span><span>TRAILERS 50%</span><span>MOVIE 0%</span><span>CREDITS 20%</span><span>END 100%</span></div></article></div>'},
+playlists(){
+if(!state.screenings.length){content.innerHTML='<div class="card"><div class="empty">Create a screening first, then build its playlist.</div></div>';return}
+content.innerHTML=
+'<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Playlist Builder</h2><p class="muted">Ads → Trailers → Feature + automation cues.</p></div><button class="primary" id="newPlaylist">+ New playlist</button></div></div>'+
+'<div class="page-grid">'+
+(state.playlists.map(p=>'<article class="movie-card"><div class="card-head"><div><h3>'+p.movie_title+'</h3><p class="muted">'+fmtDate(p.starts_at)+' • '+p.hall_name+'</p></div><span class="pill good">'+(p.items?.length||0)+' ITEMS</span></div>'+
+'<div class="queue-list">'+(p.items||[]).map(i=>'<div class="queue-row"><div><b>'+i.position+'. '+i.title+'</b><span>'+i.item_type+' • '+(i.duration_seconds||0)+' sec</span></div><button class="danger" data-delete-item="'+i.id+'">×</button></div>').join('')+'</div>'+
+'<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap"><button class="ghost" data-add-playlist-item="'+p.id+'" data-item-type="AD">+ Ad</button><button class="ghost" data-add-playlist-item="'+p.id+'" data-item-type="TRAILER">+ Trailer</button><button class="ghost" data-add-playlist-item="'+p.id+'" data-item-type="CUE">+ Cue</button><button class="danger" data-delete-playlist="'+p.id+'">Delete playlist</button></div></article>').join('')||'<div class="empty">No playlists yet.</div>')+
+'</div>';
+document.querySelector("#newPlaylist").onclick=()=>openPlaylistModal()
+},
 halls(){
 content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Halls</h2><p class="muted">Cinema halls stored in D1.</p></div><button class="primary" id="newHall">+ Add hall</button></div></div><div class="page-grid">'+state.halls.map(h=>'<article class="movie-card"><div class="card-head"><h3>'+h.name+'</h3>'+statusPill(h.status)+'</div><p>'+h.seats+' seats</p><div class="meta"><span>D1</span><span>ID '+h.id+'</span></div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-edit-hall="'+h.id+'">Edit</button><button class="danger" data-delete-hall="'+h.id+'">Delete</button></div></article>').join("")+'</div>';
 document.querySelector("#newHall").onclick=()=>openHallModal()},
@@ -89,6 +100,25 @@ state.movies=await api.get("/api/movies");pages.movies()
 });
 }
 
+function openPlaylistModal(){
+const used=new Set(state.playlists.map(p=>p.screening_id));
+const available=state.screenings.filter(s=>!used.has(s.id));
+if(!available.length){alert("Every screening already has a playlist.");return}
+modal("New playlist",'<div class="form-grid"><label>Screening<select name="screeningId">'+available.map(s=>'<option value="'+s.id+'">'+fmtDate(s.starts_at)+' — '+s.hall_name+' — '+s.movie_title+' '+s.version_name+'</option>').join("")+'</select></label><label>Name<input name="name" value="Show Playlist"></label></div>',async fd=>{
+const s=state.screenings.find(x=>x.id===fd.get("screeningId"));
+await api.send("/api/playlists","POST",{screeningId:s.id,name:fd.get("name"),movieVersionId:s.version_id});
+state.playlists=await api.get("/api/playlists");pages.playlists()
+});
+}
+
+function openPlaylistItemModal(playlistId,itemType){
+const defaultTitle=itemType==="AD"?"Advertisement":itemType==="TRAILER"?"Trailer":"Automation Cue";
+modal("Add "+itemType,'<div class="form-grid"><label>Title<input name="title" required value="'+defaultTitle+'"></label><label>Duration (sec)<input name="duration" type="number" min="0" value="'+(itemType==="CUE"?0:30)+'"></label><label>Lights %<input name="lights" type="number" min="0" max="100" value="'+(itemType==="AD"?70:itemType==="TRAILER"?50:20)+'"></label></div>',async fd=>{
+await api.send("/api/playlists/"+playlistId+"/items","POST",{itemType,title:fd.get("title"),durationSeconds:Number(fd.get("duration")),cue:{lights:Number(fd.get("lights"))}});
+state.playlists=await api.get("/api/playlists");pages.playlists()
+});
+}
+
 function openScreeningModal(){
 const vs=versions();
 if(!state.halls.length||!vs.length){alert("You need at least one hall and one movie version.");return}
@@ -109,7 +139,10 @@ const del=e.target.closest("[data-delete-movie]");if(del&&confirm("Delete this m
 const av=e.target.closest("[data-add-version]");if(av)openVersionModal(av.dataset.addVersion);
 const eh=e.target.closest("[data-edit-hall]");if(eh)openHallModal(state.halls.find(h=>h.id===eh.dataset.editHall));
 const dh=e.target.closest("[data-delete-hall]");if(dh&&confirm("Delete this hall?")){try{await api.send("/api/halls/"+encodeURIComponent(dh.dataset.deleteHall),"DELETE");state.halls=await api.get("/api/halls");pages.halls()}catch(err){alert(err.message)}}
-const ds=e.target.closest("[data-delete-screening]");if(ds&&confirm("Delete this screening?")){await api.send("/api/screenings/"+encodeURIComponent(ds.dataset.deleteScreening),"DELETE");state.screenings=await api.get("/api/screenings");pages.schedule()}
+const ds=e.target.closest("[data-delete-screening]");if(ds&&confirm("Delete this screening?")){await api.send("/api/screenings/"+encodeURIComponent(ds.dataset.deleteScreening),"DELETE");state.screenings=await api.get("/api/screenings");state.playlists=await api.get("/api/playlists");pages.schedule()}
+const apiBtn=e.target.closest("[data-add-playlist-item]");if(apiBtn)openPlaylistItemModal(apiBtn.dataset.addPlaylistItem,apiBtn.dataset.itemType);
+const di=e.target.closest("[data-delete-item]");if(di&&confirm("Delete this playlist item?")){await api.send("/api/playlist-items/"+encodeURIComponent(di.dataset.deleteItem),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
+const dp=e.target.closest("[data-delete-playlist]");if(dp&&confirm("Delete this playlist?")){await api.send("/api/playlists/"+encodeURIComponent(dp.dataset.deletePlaylist),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
 });
 
 movieForm.addEventListener("submit",async e=>{e.preventDefault();const fd=new FormData(movieForm);try{await api.send("/api/movies","POST",{title:fd.get("title"),version:fd.get("version")||"Original",format:fd.get("format"),audio:fd.get("audio")});state.movies=await api.get("/api/movies");movieForm.reset();movieDialog.close();openPage("movies")}catch(err){alert(err.message)}});
