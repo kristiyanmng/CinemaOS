@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],storageStatus:null,downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],storageStatus:null,transfers:[],downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -8,6 +8,7 @@ const subtitle=document.querySelector("#pageSubtitle");
 const nav=[...document.querySelectorAll(".nav-item")];
 const movieDialog=document.querySelector("#movieDialog");
 const movieForm=document.querySelector("#movieForm");
+const transferTray=document.querySelector("#transferTray");
 
 const api={
   async get(path){const r=await fetch(path);const d=await r.json();if(!r.ok)throw new Error(d.error||"Request failed");return d},
@@ -43,6 +44,62 @@ async function refresh(){
   subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
 
+function createTransfer(name,type){
+  const task={id:crypto.randomUUID(),name,type,progress:0,status:"QUEUED",detail:"Waiting"};
+  state.transfers.unshift(task);
+  renderTransferTray();
+  return task;
+}
+
+function updateTransfer(task,patch){
+  Object.assign(task,patch);
+  renderTransferTray();
+  if(document.querySelector(".nav-item.active")?.dataset.page==="delivery") pages.delivery();
+}
+
+function renderTransferTray(){
+  if(!transferTray)return;
+  const visible=state.transfers.filter(t=>t.status!=="HIDDEN").slice(0,4);
+  if(!visible.length){transferTray.classList.remove("open");transferTray.innerHTML="";return}
+  transferTray.classList.add("open");
+  const active=visible.filter(t=>!["READY","FAILED","HANDED_TO_BROWSER"].includes(t.status)).length;
+  transferTray.innerHTML='<div class="transfer-head"><div><b>Background transfers</b><span>'+active+' active</span></div><button class="icon-btn" data-hide-complete title="Clear completed">×</button></div>'+
+  visible.map(t=>'<div class="transfer-item"><div class="transfer-line"><span class="transfer-type">'+t.type+'</span><b>'+t.name+'</b><strong>'+t.progress+'%</strong></div><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.status+(t.detail?' • '+t.detail:'')+'</small></div>').join("");
+}
+
+function queueBrowserDownload(asset){
+  const task=createTransfer(asset.title,"DOWNLOAD");
+  updateTransfer(task,{progress:100,status:"HANDED_TO_BROWSER",detail:"Browser download started"});
+  const a=document.createElement("a");
+  a.href="/api/storage/object/"+encodeURIComponent(asset.storage_ref);
+  a.download=asset.title;
+  a.style.display="none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function runBackgroundDcpUpload(file,meta,task){
+  try{
+    updateTransfer(task,{status:"UPLOADING",detail:"Uploading to R2"});
+    const uploaded=await multipartUpload(file,meta,p=>updateTransfer(task,{progress:p,status:"UPLOADING",detail:"Uploading to R2"}));
+    updateTransfer(task,{progress:100,status:"FINALIZING",detail:"Saving CinemaOS metadata"});
+    await api.send("/api/content-assets","POST",{
+      assetType:meta.assetType,
+      title:meta.title,
+      durationSeconds:Number(meta.duration||0),
+      format:"DCP package",
+      language:meta.language||"",
+      storageRef:uploaded.key
+    });
+    state.contentAssets=await api.get("/api/content-assets");
+    updateTransfer(task,{progress:100,status:"READY",detail:"Stored in Content Library"});
+    if(document.querySelector(".nav-item.active")?.dataset.page==="contentLibrary") pages.contentLibrary();
+  }catch(err){
+    updateTransfer(task,{status:"FAILED",detail:err.message});
+  }
+}
+
 function modal(titleText,html,onSubmit){
   const d=document.createElement("dialog");d.className="dialog";
   d.innerHTML='<form method="dialog"><div class="dialog-head"><div><h2>'+titleText+'</h2></div><button value="cancel" class="icon-btn">×</button></div>'+html+'<div class="dialog-actions"><button value="cancel" class="ghost">Cancel</button><button type="submit" value="default" class="primary">Save</button></div></form>';
@@ -59,7 +116,7 @@ content.innerHTML=`
 <article class="card stat"><span>Halls</span><strong>${state.halls.length}</strong><small>D1 database</small></article>
 <article class="card stat"><span>Movies</span><strong>${state.movies.length}</strong><small>Central library</small></article>
 <article class="card stat"><span>Screenings</span><strong>${state.screenings.length}</strong><small>Shared schedule</small></article>
-<article class="card stat"><span>Downloads</span><strong>${state.downloads.filter(d=>d.progress<100).length}</strong><small>Background queue</small></article>
+<article class="card stat"><span>Transfers</span><strong>${state.transfers.filter(t=>!["READY","FAILED","HANDED_TO_BROWSER"].includes(t.status)).length}</strong><small>Background queue</small></article>
 </div>
 <div class="grid two">
 <article class="card"><div class="card-head"><h2>Hall status</h2><span class="pill good">D1 LIVE</span></div>
@@ -71,7 +128,7 @@ contentLibrary(){
 content.innerHTML=
 '<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Content Library</h2><p class="muted">DCP trailers, advertisements and other preshow packages.</p></div><div style="display:flex;gap:8px"><button class="ghost" id="newContentAsset">+ Metadata only</button><button class="primary" id="uploadContentAsset">Import DCP</button></div></div><div class="notice">R2 Storage: '+(state.storageStatus?.configured?"CONNECTED":"NOT CONFIGURED")+' • Multipart R2 upload supports large DCP ZIP/packages; full feature DCP folders will use CinemaOS Agent.</div></div>'+
 '<div class="page-grid">'+
-(state.contentAssets.map(a=>'<article class="movie-card"><div class="card-head"><h3>'+a.title+'</h3><span class="pill '+(a.asset_type==="TRAILER"?"playing":a.asset_type==="AD"?"warn":"")+'">'+a.asset_type+'</span></div><p>'+(a.duration_seconds||0)+' sec • '+(a.format||"DCP")+'</p><div class="meta"><span>'+(a.language||"No language")+'</span><span>'+a.status+'</span><span>'+(a.storage_ref?"R2 FILE":"METADATA")+'</span></div><div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">'+(a.storage_ref?'<button class="ghost" data-preview-content="'+a.id+'">Preview / Open</button>':'')+'<button class="ghost" data-edit-content="'+a.id+'">Edit</button><button class="danger" data-delete-content="'+a.id+'">Delete</button></div></article>').join("")||'<div class="empty">No reusable content yet.</div>')+
+(state.contentAssets.map(a=>'<article class="movie-card"><div class="card-head"><h3>'+a.title+'</h3><span class="pill '+(a.asset_type==="TRAILER"?"playing":a.asset_type==="AD"?"warn":"")+'">'+a.asset_type+'</span></div><p>'+(a.duration_seconds||0)+' sec • '+(a.format||"DCP")+'</p><div class="meta"><span>'+(a.language||"No language")+'</span><span>'+a.status+'</span><span>'+(a.storage_ref?"R2 FILE":"METADATA")+'</span></div><div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">'+(a.storage_ref?'<button class="ghost" data-download-content="'+a.id+'">Download</button><button class="ghost" data-preview-content="'+a.id+'">Open</button>':'')+'<button class="ghost" data-edit-content="'+a.id+'">Edit</button><button class="danger" data-delete-content="'+a.id+'">Delete</button></div></article>').join("")||'<div class="empty">No reusable content yet.</div>')+
 '</div>';
 document.querySelector("#newContentAsset").onclick=()=>openContentAssetModal();
 document.querySelector("#uploadContentAsset").onclick=()=>openUploadContentModal()
@@ -80,7 +137,10 @@ movies(){
 content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Movie Library</h2><p class="muted">Movies and all available versions.</p></div><button class="primary" id="newMovie">+ Add movie</button></div></div><div class="page-grid" id="moviesGrid"></div>';
 renderMovies();document.querySelector("#newMovie").onclick=()=>movieDialog.showModal()},
 delivery(){
-content.innerHTML='<div class="card"><div class="card-head"><h2>Content Delivery Queue</h2><span class="pill warn">DEMO</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Content</th><th>Destination</th><th>Status</th><th>Progress</th></tr></thead><tbody>'+state.downloads.map(d=>'<tr><td>'+d.name+'</td><td>Central Storage</td><td>'+statusPill(d.status)+'</td><td>'+d.progress+'%</td></tr>').join("")+'</tbody></table></div></div>'},
+const rows=state.transfers.map(t=>'<tr><td>'+t.name+'</td><td>'+t.type+'</td><td>'+statusPill(t.status)+'</td><td><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.progress+'%'+(t.detail?' • '+t.detail:'')+'</small></td></tr>').join("");
+content.innerHTML='<div class="card"><div class="card-head"><div><h2>Background Transfers</h2><p class="muted">Uploads continue while you use other CinemaOS pages.</p></div><span class="pill good">LIVE</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Content</th><th>Direction</th><th>Status</th><th>Progress</th></tr></thead><tbody>'+(rows||'<tr><td colspan="4">No transfers in this session.</td></tr>')+'</tbody></table></div></div>'+
+'<div class="card"><div class="notice">Browser uploads continue while this CinemaOS tab stays open. CinemaOS Agent will later make large DCP transfers independent of the browser, including after closing the web app.</div></div>'
+},
 schedule(){
 content.innerHTML='<div class="card"><div class="card-head"><h2>Schedule</h2><button class="primary" id="newScreening">+ New screening</button></div><div class="table-wrap"><table class="table"><thead><tr><th>Start</th><th>Hall</th><th>Movie</th><th>Version</th><th>Status</th><th></th></tr></thead><tbody>'+
 (state.screenings.map(s=>'<tr><td>'+fmtDate(s.starts_at)+'</td><td>'+s.hall_name+'</td><td>'+s.movie_title+'</td><td>'+s.version_name+'</td><td>'+statusPill(s.status)+'</td><td><button class="danger" data-delete-screening="'+s.id+'">Delete</button></td></tr>').join("")||'<tr><td colspan="6">No screenings yet.</td></tr>')+
@@ -196,42 +256,16 @@ d.querySelector("form").addEventListener("submit",async e=>{
   const file=fd.get("file");
   if(!(file instanceof File)||!file.size)return;
 
-  const submit=e.currentTarget.querySelector('button[type="submit"]');
-  submit.disabled=true;
-
-  const bar=d.querySelector("#uploadBar");
-  const pct=d.querySelector("#uploadPct");
-  const label=d.querySelector("#uploadLabel");
-
-  try{
-    label.textContent="Uploading DCP package "+file.name;
-
-    const uploaded=await multipartUpload(file,{
-      assetType:fd.get("assetType"),
-      title:fd.get("title")
-    },p=>{
-      bar.style.width=p+"%";
-      pct.textContent=p+"%";
-    });
-
-    label.textContent="Saving CinemaOS metadata";
-
-    await api.send("/api/content-assets","POST",{
-      assetType:fd.get("assetType"),
-      title:fd.get("title"),
-      durationSeconds:Number(fd.get("duration")),
-      format:"DCP package",
-      language:fd.get("language"),
-      storageRef:uploaded.key
-    });
-
-    state.contentAssets=await api.get("/api/content-assets");
-    d.close();
-    pages.contentLibrary();
-  }catch(err){
-    submit.disabled=false;
-    alert(err.message);
-  }
+  const meta={
+    assetType:fd.get("assetType"),
+    title:fd.get("title"),
+    duration:Number(fd.get("duration")),
+    language:fd.get("language")
+  };
+  const task=createTransfer(meta.title||file.name,"UPLOAD");
+  d.close();
+  updateTransfer(task,{status:"QUEUED",detail:"Preparing "+file.name});
+  runBackgroundDcpUpload(file,meta,task);
 });
 
 d.showModal();
@@ -330,6 +364,7 @@ const ds=e.target.closest("[data-delete-screening]");if(ds&&confirm("Delete this
 const apiBtn=e.target.closest("[data-add-playlist-item]");if(apiBtn)openPlaylistItemModal(apiBtn.dataset.addPlaylistItem,apiBtn.dataset.itemType);
 const di=e.target.closest("[data-delete-item]");if(di&&confirm("Delete this playlist item?")){await api.send("/api/playlist-items/"+encodeURIComponent(di.dataset.deleteItem),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
 const dp=e.target.closest("[data-delete-playlist]");if(dp&&confirm("Delete this playlist?")){await api.send("/api/playlists/"+encodeURIComponent(dp.dataset.deletePlaylist),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
+const dl=e.target.closest("[data-download-content]");if(dl){const a=state.contentAssets.find(x=>x.id===dl.dataset.downloadContent);if(a?.storage_ref)queueBrowserDownload(a)}
 const pc=e.target.closest("[data-preview-content]");if(pc){const a=state.contentAssets.find(x=>x.id===pc.dataset.previewContent);if(a?.storage_ref)window.open("/api/storage/object/"+encodeURIComponent(a.storage_ref),"_blank")}
 const dcx=e.target.closest("[data-delete-cert]");if(dcx&&confirm("Delete this public device certificate?")){try{await api.send("/api/certificates/"+encodeURIComponent(dcx.dataset.deleteCert),"DELETE");state.certificates=await api.get("/api/certificates");pages.security()}catch(err){alert(err.message)}}
 const ec=e.target.closest("[data-edit-content]");if(ec)openContentAssetModal(state.contentAssets.find(a=>a.id===ec.dataset.editContent));
@@ -338,4 +373,4 @@ const dc=e.target.closest("[data-delete-content]");if(dc&&confirm("Delete this c
 
 movieForm.addEventListener("submit",async e=>{e.preventDefault();const fd=new FormData(movieForm);try{await api.send("/api/movies","POST",{title:fd.get("title"),version:fd.get("version")||"Original",format:fd.get("format"),audio:fd.get("audio")});state.movies=await api.get("/api/movies");movieForm.reset();movieDialog.close();openPage("movies")}catch(err){alert(err.message)}});
 
-(async()=>{await refresh();openPage("dashboard")})();
+(async()=>{await refresh();renderTransferTray();openPage("dashboard")})();
