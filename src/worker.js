@@ -70,6 +70,32 @@ async function getPlaylists(env) {
   return results || [];
 }
 
+async function ensureContentSchema(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS content_assets (
+      id TEXT PRIMARY KEY,
+      cinema_id TEXT NOT NULL,
+      asset_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      duration_seconds INTEGER NOT NULL DEFAULT 0,
+      format TEXT,
+      language TEXT,
+      status TEXT NOT NULL DEFAULT 'READY',
+      storage_ref TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
+    )
+  `).run();
+}
+
+async function getContentAssets(env) {
+  await ensureContentSchema(env);
+  const { results } = await env.DB.prepare(
+    "SELECT id,cinema_id,asset_type,title,duration_seconds,format,language,status,storage_ref,created_at FROM content_assets ORDER BY created_at DESC"
+  ).all();
+  return results || [];
+}
+
 async function tableCount(env) {
   if (!env.DB) return null;
   const row = await env.DB.prepare(
@@ -133,7 +159,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.6.0",
+        ok:true,service:"CinemaOS API",version:"0.7.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -146,7 +172,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.6.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.7.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -259,6 +285,55 @@ export default {
     if (url.pathname.startsWith("/api/screenings/") && method === "DELETE") {
       const id=decodeURIComponent(url.pathname.split("/").pop());
       await env.DB.prepare("DELETE FROM screenings WHERE id=?").bind(id).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname === "/api/content-assets" && method === "GET") {
+      return json(await getContentAssets(env));
+    }
+
+    if (url.pathname === "/api/content-assets" && method === "POST") {
+      await ensureContentSchema(env);
+      const body=await request.json();
+      const title=String(body.title||"").trim();
+      const assetType=String(body.assetType||"OTHER").toUpperCase();
+      if(!title) return json({error:"Content title is required"},{status:400});
+      if(!["AD","TRAILER","OTHER"].includes(assetType)) return json({error:"Invalid content type"},{status:400});
+
+      const id=crypto.randomUUID();
+      await env.DB.prepare(
+        "INSERT INTO content_assets (id,cinema_id,asset_type,title,duration_seconds,format,language,status,storage_ref) VALUES (?,?,?,?,?,?,?,?,?)"
+      ).bind(
+        id,"BG-VT-PALACE-001",assetType,title,Number(body.durationSeconds||0),
+        String(body.format||"DCP"),String(body.language||""),"READY",body.storageRef||null
+      ).run();
+
+      return json({ok:true,id},{status:201});
+    }
+
+    if (url.pathname.startsWith("/api/content-assets/") && method === "PUT") {
+      await ensureContentSchema(env);
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      const body=await request.json();
+      await env.DB.prepare(
+        "UPDATE content_assets SET asset_type=?,title=?,duration_seconds=?,format=?,language=?,status=? WHERE id=?"
+      ).bind(
+        String(body.assetType||"OTHER").toUpperCase(),
+        String(body.title||"").trim(),
+        Number(body.durationSeconds||0),
+        String(body.format||"DCP"),
+        String(body.language||""),
+        String(body.status||"READY"),
+        id
+      ).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname.startsWith("/api/content-assets/") && method === "DELETE") {
+      await ensureContentSchema(env);
+      const id=decodeURIComponent(url.pathname.split("/").pop());
+      await env.DB.prepare("UPDATE playlist_items SET source_ref=NULL WHERE source_ref=?").bind(id).run().catch(()=>{});
+      await env.DB.prepare("DELETE FROM content_assets WHERE id=?").bind(id).run();
       return json({ok:true});
     }
 
