@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const VERSION="0.1.0";
+const VERSION="0.1.1";
 const DATA_DIR=path.join(process.env.PROGRAMDATA||process.cwd(),"CinemaOSAgent");
 const CONFIG_PATH=path.join(DATA_DIR,"config.json");
 const QUEUE_PATH=path.join(DATA_DIR,"queue.json");
@@ -10,7 +10,14 @@ const QUEUE_PATH=path.join(DATA_DIR,"queue.json");
 fs.mkdirSync(DATA_DIR,{recursive:true});
 
 function loadJson(file,fallback){
-  try{return JSON.parse(fs.readFileSync(file,"utf8"))}catch{return fallback}
+  try{
+    const raw=fs.readFileSync(file,"utf8").replace(/^\uFEFF/,"");
+    return JSON.parse(raw);
+  }catch(err){
+    console.error("Could not read JSON config:",file);
+    console.error(err.message);
+    return fallback;
+  }
 }
 function saveJson(file,value){
   const tmp=file+".tmp";
@@ -41,9 +48,9 @@ async function api(pathname,options={}){
 async function enrollIfNeeded(){
   if(config.agentId&&config.agentToken)return;
   if(!config.enrollmentKey){
-    console.log("CinemaOS Agent is not enrolled.");
+    console.log("STATUS: NOT ENROLLED");
     console.log("Edit "+CONFIG_PATH+" and set enrollmentKey, then restart.");
-    return;
+    return false;
   }
   const data=await api("/api/agents/enroll",{
     method:"POST",
@@ -59,7 +66,9 @@ async function enrollIfNeeded(){
   config.agentToken=data.agentToken;
   config.enrollmentKey="";
   saveJson(CONFIG_PATH,config);
-  console.log("Agent enrolled:",config.agentId);
+  console.log("STATUS: ENROLLED");
+  console.log("Agent ID:",config.agentId);
+  return true;
 }
 
 async function heartbeat(){
@@ -92,12 +101,16 @@ async function pollJobs(){
 
 async function tick(){
   try{
-    await enrollIfNeeded();
+    const enrolled=await enrollIfNeeded();
+    if(!config.agentToken){
+      console.log(new Date().toISOString(),"Agent waiting for enrollment.");
+      return;
+    }
     await heartbeat();
     await pollJobs();
-    console.log(new Date().toISOString(),"Agent online. Queue:",queue.length);
+    console.log(new Date().toISOString(),"STATUS: ONLINE | Queue:",queue.length);
   }catch(err){
-    console.error(new Date().toISOString(),err.message);
+    console.error(new Date().toISOString(),"STATUS: ERROR |",err.message);
   }
 }
 
