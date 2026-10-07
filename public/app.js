@@ -9,6 +9,33 @@ const nav=[...document.querySelectorAll(".nav-item")];
 const movieDialog=document.querySelector("#movieDialog");
 const movieForm=document.querySelector("#movieForm");
 const transferTray=document.querySelector("#transferTray");
+const TRANSFER_STORAGE_KEY="cinemaos_transfers_v1";
+
+function persistTransfers(){
+  const safe=state.transfers.map(t=>({
+    id:t.id,name:t.name,type:t.type,progress:t.progress,status:t.status,detail:t.detail,
+    upload:t.upload?{
+      key:t.upload.key,uploadId:t.upload.uploadId,assetId:t.upload.assetId,
+      fileName:t.upload.fileName,fileSize:t.upload.fileSize,fileType:t.upload.fileType,
+      chunkSize:t.upload.chunkSize,totalParts:t.upload.totalParts,parts:t.upload.parts||[],
+      meta:t.upload.meta||null
+    }:null
+  }));
+  localStorage.setItem(TRANSFER_STORAGE_KEY,JSON.stringify(safe));
+}
+
+function restoreTransfers(){
+  try{
+    const saved=JSON.parse(localStorage.getItem(TRANSFER_STORAGE_KEY)||"[]");
+    state.transfers=(saved||[]).map(t=>{
+      if(t.upload && !["READY","FAILED","HANDED_TO_BROWSER","HIDDEN"].includes(t.status)){
+        t.status="PAUSED";
+        t.detail="Refresh detected — select the same file to resume";
+      }
+      return t;
+    });
+  }catch{state.transfers=[]}
+}
 
 const api={
   async get(path){const r=await fetch(path);const d=await r.json();if(!r.ok)throw new Error(d.error||"Request failed");return d},
@@ -47,12 +74,14 @@ async function refresh(){
 function createTransfer(name,type){
   const task={id:crypto.randomUUID(),name,type,progress:0,status:"QUEUED",detail:"Waiting"};
   state.transfers.unshift(task);
+  persistTransfers();
   renderTransferTray();
   return task;
 }
 
 function updateTransfer(task,patch){
   Object.assign(task,patch);
+  persistTransfers();
   renderTransferTray();
   if(document.querySelector(".nav-item.active")?.dataset.page==="delivery") pages.delivery();
 }
@@ -64,7 +93,7 @@ function renderTransferTray(){
   transferTray.classList.add("open");
   const active=visible.filter(t=>!["READY","FAILED","HANDED_TO_BROWSER"].includes(t.status)).length;
   transferTray.innerHTML='<div class="transfer-head"><div><b>Background transfers</b><span>'+active+' active</span></div><button class="icon-btn" data-hide-complete title="Clear completed">×</button></div>'+
-  visible.map(t=>'<div class="transfer-item"><div class="transfer-line"><span class="transfer-type">'+t.type+'</span><b>'+t.name+'</b><strong>'+t.progress+'%</strong></div><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.status+(t.detail?' • '+t.detail:'')+'</small></div>').join("");
+  visible.map(t=>'<div class="transfer-item"><div class="transfer-line"><span class="transfer-type">'+t.type+'</span><b>'+t.name+'</b><strong>'+t.progress+'%</strong></div><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.status+(t.detail?' • '+t.detail:'')+'</small>'+(t.status==="PAUSED"&&t.upload?'<button class="ghost transfer-resume" data-resume-transfer="'+t.id+'">Resume</button>':'')+'</div>').join("");
 }
 
 function queueBrowserDownload(asset){
@@ -82,7 +111,7 @@ function queueBrowserDownload(asset){
 async function runBackgroundDcpUpload(file,meta,task){
   try{
     updateTransfer(task,{status:"UPLOADING",detail:"Uploading to R2"});
-    const uploaded=await multipartUpload(file,meta,p=>updateTransfer(task,{progress:p,status:"UPLOADING",detail:"Uploading to R2"}));
+    const uploaded=await multipartUpload(file,meta,p=>updateTransfer(task,{progress:p,status:"UPLOADING",detail:"Uploading to R2"}),task);
     updateTransfer(task,{progress:100,status:"FINALIZING",detail:"Saving CinemaOS metadata"});
     await api.send("/api/content-assets","POST",{
       assetType:meta.assetType,
@@ -93,10 +122,10 @@ async function runBackgroundDcpUpload(file,meta,task){
       storageRef:uploaded.key
     });
     state.contentAssets=await api.get("/api/content-assets");
-    updateTransfer(task,{progress:100,status:"READY",detail:"Stored in Content Library"});
+    updateTransfer(task,{progress:100,status:"READY",detail:"Stored in Content Library",upload:null});
     if(document.querySelector(".nav-item.active")?.dataset.page==="contentLibrary") pages.contentLibrary();
   }catch(err){
-    updateTransfer(task,{status:"FAILED",detail:err.message});
+    if(task.status!=="PAUSED") updateTransfer(task,{status:"PAUSED",detail:err.message||"Upload interrupted"});
   }
 }
 
@@ -186,20 +215,50 @@ if(!state.movies.length){grid.innerHTML='<div class="empty">No movies yet.</div>
 grid.innerHTML=state.movies.map(m=>'<article class="movie-card"><div class="card-head"><h3>'+m.title+'</h3><span class="pill good">'+(m.versions?.length||0)+' VERSION(S)</span></div><p>'+(m.distributor||"No distributor")+'</p><div class="meta">'+(m.versions||[]).map(v=>'<span>'+v.name+' • '+(v.format||"DCP")+' • '+(v.audio||"")+'</span>').join("")+'</div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-add-version="'+m.id+'">+ Version</button><button class="danger" data-delete-movie="'+m.id+'">Delete</button></div></article>').join("")
 }
 
-async function multipartUpload(file,meta,onProgress){
-  const init=await api.send("/api/storage/multipart/init","POST",{
-    assetType:meta.assetType,
-    title:meta.title,
-    fileName:file.name,
-    contentType:file.type||"application/octet-stream"
-  });
-
+async function multipartUpload(file,meta,onProgress,task=null){
   const chunkSize=20*1024*1024;
+  let init;
+  let parts=[];
+
+  if(task?.upload?.uploadId && task.upload.key){
+    init={key:task.upload.key,uploadId:task.upload.uploadId,assetId:task.upload.assetId};
+    parts=[...(task.upload.parts||[])];
+  }else{
+    init=await api.send("/api/storage/multipart/init","POST",{
+      assetType:meta.assetType,
+      title:meta.title,
+      fileName:file.name,
+      contentType:file.type||"application/octet-stream"
+    });
+
+    if(task){
+      task.upload={
+        key:init.key,
+        uploadId:init.uploadId,
+        assetId:init.assetId,
+        fileName:file.name,
+        fileSize:file.size,
+        fileType:file.type||"application/octet-stream",
+        chunkSize,
+        totalParts:Math.ceil(file.size/chunkSize),
+        parts:[],
+        meta
+      };
+      persistTransfers();
+    }
+  }
+
   const totalParts=Math.ceil(file.size/chunkSize);
-  const parts=[];
+  const completed=new Map(parts.map(p=>[Number(p.partNumber),p]));
 
   try{
     for(let i=0;i<totalParts;i++){
+      const partNumber=i+1;
+      if(completed.has(partNumber)){
+        onProgress(Math.round((completed.size/totalParts)*100));
+        continue;
+      }
+
       const start=i*chunkSize;
       const end=Math.min(file.size,start+chunkSize);
       const blob=file.slice(start,end);
@@ -207,7 +266,7 @@ async function multipartUpload(file,meta,onProgress){
       const qs=new URLSearchParams({
         key:init.key,
         uploadId:init.uploadId,
-        partNumber:String(i+1)
+        partNumber:String(partNumber)
       });
 
       const r=await fetch("/api/storage/multipart/part?"+qs.toString(),{
@@ -217,10 +276,20 @@ async function multipartUpload(file,meta,onProgress){
 
       const data=await r.json().catch(()=>({}));
       if(!r.ok) throw new Error(data.detail?(data.error+": "+data.detail):(data.error||("HTTP "+r.status)));
-      parts.push({partNumber:data.partNumber,etag:data.etag});
 
-      onProgress(Math.round(((i+1)/totalParts)*100));
+      const part={partNumber:data.partNumber,etag:data.etag};
+      parts.push(part);
+      completed.set(partNumber,part);
+
+      if(task?.upload){
+        task.upload.parts=parts;
+        persistTransfers();
+      }
+
+      onProgress(Math.round((completed.size/totalParts)*100));
     }
+
+    parts.sort((a,b)=>a.partNumber-b.partNumber);
 
     await api.send("/api/storage/multipart/complete","POST",{
       key:init.key,
@@ -230,14 +299,53 @@ async function multipartUpload(file,meta,onProgress){
 
     return init;
   }catch(err){
-    try{
-      await api.send("/api/storage/multipart/abort","POST",{
-        key:init.key,
-        uploadId:init.uploadId
-      });
-    }catch{}
+    if(task){
+      updateTransfer(task,{status:"PAUSED",detail:"Upload interrupted — press Resume and select the same file"});
+      throw err;
+    }
     throw err;
   }
+}
+
+function validateResumeFile(task,file){
+  return task?.upload &&
+    file.name===task.upload.fileName &&
+    file.size===task.upload.fileSize;
+}
+
+function resumeTransfer(task){
+  if(!task?.upload)return;
+  const picker=document.createElement("input");
+  picker.type="file";
+  picker.accept=".zip,.dcp,application/zip,application/octet-stream";
+  picker.onchange=async()=>{
+    const file=picker.files?.[0];
+    if(!file)return;
+    if(!validateResumeFile(task,file)){
+      alert("Select the same file used for this upload: "+task.upload.fileName);
+      return;
+    }
+    const meta=task.upload.meta||{};
+    updateTransfer(task,{status:"UPLOADING",detail:"Resuming from uploaded parts"});
+    try{
+      const uploaded=await multipartUpload(file,meta,p=>updateTransfer(task,{progress:p,status:"UPLOADING",detail:"Resuming upload"}),task);
+      updateTransfer(task,{progress:100,status:"FINALIZING",detail:"Saving CinemaOS metadata"});
+      await api.send("/api/content-assets","POST",{
+        assetType:meta.assetType,
+        title:meta.title,
+        durationSeconds:Number(meta.duration||0),
+        format:"DCP package",
+        language:meta.language||"",
+        storageRef:uploaded.key
+      });
+      state.contentAssets=await api.get("/api/content-assets");
+      updateTransfer(task,{progress:100,status:"READY",detail:"Stored in Content Library",upload:null});
+      if(document.querySelector(".nav-item.active")?.dataset.page==="contentLibrary")pages.contentLibrary();
+    }catch(err){
+      updateTransfer(task,{status:"PAUSED",detail:err.message||"Resume interrupted"});
+    }
+  };
+  picker.click();
 }
 
 function openUploadContentModal(){
@@ -373,4 +481,4 @@ const dc=e.target.closest("[data-delete-content]");if(dc&&confirm("Delete this c
 
 movieForm.addEventListener("submit",async e=>{e.preventDefault();const fd=new FormData(movieForm);try{await api.send("/api/movies","POST",{title:fd.get("title"),version:fd.get("version")||"Original",format:fd.get("format"),audio:fd.get("audio")});state.movies=await api.get("/api/movies");movieForm.reset();movieDialog.close();openPage("movies")}catch(err){alert(err.message)}});
 
-(async()=>{await refresh();renderTransferTray();openPage("dashboard")})();
+(async()=>{restoreTransfers();await refresh();renderTransferTray();openPage("dashboard")})();
