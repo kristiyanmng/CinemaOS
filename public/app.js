@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],storageStatus:null,transfers:[],downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],agents:[],storageStatus:null,transfers:[],downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -68,6 +68,7 @@ async function refresh(){
   state.storageStatus=await api.get("/api/storage/status");
   state.certificates=await api.get("/api/certificates");
   state.kdmRequests=await api.get("/api/kdm-requests");
+  state.agents=await api.get("/api/agents");
   subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
 
@@ -206,7 +207,7 @@ document.querySelector("#newKdmRequest").onclick=()=>openKdmRequestModal()
 
 ai(){content.innerHTML='<div class="card"><div class="card-head"><h2>AI Assistant</h2><span class="pill ai">BETA</span></div><p class="subtle">Next: schedule optimization using real screening and hall data.</p></div>'},
 reports(){content.innerHTML='<div class="grid three"><article class="card"><span class="muted">Screenings</span><div class="kpi">'+state.screenings.length+'</div></article><article class="card"><span class="muted">Movies</span><div class="kpi">'+state.movies.length+'</div></article><article class="card"><span class="muted">Halls</span><div class="kpi">'+state.halls.length+'</div></article></div>'},
-settings(){content.innerHTML='<div class="grid two"><article class="card"><h2>Cinema profile</h2><div class="field"><label>Cinema ID<input value="'+(state.cinema?.id||"")+'" readonly></label></div><div class="field"><label>Name<input value="'+(state.cinema?.name||"")+'" readonly></label></div></article><article class="card"><h2>Database</h2><p class="subtle">Cloudflare D1 connected.</p></article></div>'}
+settings(){content.innerHTML='<div class="grid two"><article class="card"><h2>Cinema profile</h2><div class="field"><label>Cinema ID<input value="'+(state.cinema?.id||"")+'" readonly></label></div><div class="field"><label>Name<input value="'+(state.cinema?.name||"")+'" readonly></label></div></article><article class="card"><h2>Database</h2><p class="subtle">Cloudflare D1 connected.</p></article></div><div class="card"><div class="card-head"><div><h2>CinemaOS Agents</h2><p class="muted">Persistent local transfer workers.</p></div><span class="pill '+(state.agents.some(a=>a.status==="ONLINE")?"good":"warn")+'">'+state.agents.length+' REGISTERED</span></div>'+(state.agents.map(a=>'<div class="queue-row"><div><b>'+a.name+'</b><span>'+((a.machine_name||"Unknown PC"))+' • v'+(a.version||"?")+'</span><span>Last seen: '+(a.last_seen_at||"never")+'</span></div>'+statusPill(a.status)+'</div>').join("")||'<div class="empty">No CinemaOS Agent registered yet.</div>')+'<div class="notice" style="margin-top:14px">Agent enrollment is protected by the Worker secret AGENT_ENROLLMENT_KEY. Remote file jobs stay disabled until CinemaOS user authentication is added.</div></div>'}
 };
 
 function renderMovies(){
