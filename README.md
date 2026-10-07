@@ -1,60 +1,29 @@
 # CinemaOS
 
-CinemaOS is an early-stage cinema operations platform for content delivery, scheduling, hall monitoring, playlists, automation and future AI-assisted workflows.
+CinemaOS is the live development repository for a cinema operations platform.
 
-## Current build
+## v0.3 foundation
 
-This repository is the live development base for CinemaOS.
+The project now has:
+- Cloudflare Worker backend entrypoint
+- Static frontend served from `public/`
+- `/api/health` endpoint
+- `/api/bootstrap` endpoint
+- D1-ready SQL schema draft in `schema.sql`
+- Central storage / halls / schedule / delivery UI
 
-Included:
-- Dashboard
-- Movie Library
-- Content Delivery
-- Schedule
-- Playlists
-- Halls
-- Automation
-- AI Assistant UI
-- Reports
-- Settings
-- Central-storage workflow concept
-- Browser-persistent demo data
+## Current deployment
 
-## Architecture direction
+Cloudflare Workers with Static Assets.
 
-Production target:
-- Web frontend
-- Cloud API
-- Database
-- CinemaOS Agent installed inside the cinema
-- Hardware adapter layer
-- Central cinema storage
-- Distributor Portal
-- Authorized DCP/KDM workflows
+- Worker entry: `src/worker.js`
+- Static assets: `public/`
+- Config: `wrangler.jsonc`
 
-CinemaOS will not bypass DCI/KDM protections or cinema-server security requirements. Real equipment integration must use supported/authorized protocols, certificates and vendor interfaces.
+## Next production step
 
-## Cloudflare Pages
+Create a Cloudflare D1 database and bind it as `DB`. Then CinemaOS can move movies, halls, schedules and users out of browser localStorage and into shared persistent storage.
 
-This version is static and can be deployed directly.
+## Safety
 
-Recommended:
-- Production branch: main
-- Framework preset: None
-- Build command: leave empty
-- Build output directory: /
-
-## Roadmap
-
-1. Cloudflare Pages live deployment
-2. Cloudflare Worker API
-3. Real authentication and roles
-4. D1/PostgreSQL data model
-5. Cinema profiles
-6. Content/version records in backend
-7. CinemaOS Agent
-8. Authorized DCP metadata ingest (ASSETMAP / PKL / CPL)
-9. Distributor Portal
-10. Hardware adapters
-11. KDM request/import/validity management
-12. Realtime hall telemetry
+CinemaOS does not bypass DCI/KDM protections or cinema-server security requirements. DCP/KDM and equipment integrations must use authorized content workflows, valid certificates and supported vendor interfaces.
