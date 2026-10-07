@@ -3,16 +3,18 @@ import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
 
-const VERSION="0.2.2";
+const VERSION="0.3.0";
 const DATA_DIR=path.join(process.env.PROGRAMDATA||process.cwd(),"CinemaOSAgent");
 const CONFIG_PATH=path.join(DATA_DIR,"config.json");
 const QUEUE_PATH=path.join(DATA_DIR,"queue.json");
 const INBOX_DIR=path.join(DATA_DIR,"Inbox");
 const DONE_DIR=path.join(DATA_DIR,"Done");
+const STORAGE_DIR=path.join(DATA_DIR,"CentralStorage");
 
 fs.mkdirSync(DATA_DIR,{recursive:true});
 fs.mkdirSync(INBOX_DIR,{recursive:true});
 fs.mkdirSync(DONE_DIR,{recursive:true});
+fs.mkdirSync(STORAGE_DIR,{recursive:true});
 
 function loadJson(file,fallback){
   try{
@@ -301,6 +303,76 @@ function discoverInbox(){
   }
 }
 
+async function reportRemoteJob(job,status,progress,message){
+  try{
+    await api("/api/agent/jobs/"+encodeURIComponent(job.id),{
+      method:"PUT",
+      body:JSON.stringify({status,progress,message})
+    });
+  }catch{}
+}
+
+async function downloadRemoteContent(job){
+  let payload={};
+  try{payload=JSON.parse(job.payload_json||"{}")}catch{}
+  const storageRef=String(payload.storageRef||"");
+  if(!storageRef) throw new Error("Missing storageRef");
+  const fileName=String(payload.fileName||path.basename(storageRef)||"content.bin").replace(/[<>:"/\\|?*]/g,"_");
+  const finalPath=path.join(STORAGE_DIR,fileName);
+  const tempPath=finalPath+".part";
+  let offset=0;
+  try{offset=fs.existsSync(tempPath)?fs.statSync(tempPath).size:0}catch{}
+
+  await reportRemoteJob(job,"RUNNING",Number(job.progress||0),"Downloading to central storage");
+  const headers={authorization:"Bearer "+config.agentToken};
+  if(offset>0)headers.range="bytes="+offset+"-";
+  const r=await fetch(config.apiBase+"/api/storage/object/"+encodeURIComponent(storageRef),{
+    method:"GET",headers,signal:AbortSignal.timeout(120000)
+  });
+  if(!r.ok && r.status!==206) throw new Error("Download HTTP "+r.status);
+
+  const totalHeader=Number(r.headers.get("content-length")||0);
+  const total=offset+totalHeader;
+  const fh=fs.openSync(tempPath,offset>0?"a":"w");
+  let done=offset,lastReport=Date.now();
+  try{
+    const reader=r.body.getReader();
+    while(true){
+      const {done:ended,value}=await reader.read();
+      if(ended)break;
+      fs.writeSync(fh,value);
+      done+=value.byteLength;
+      if(Date.now()-lastReport>1000){
+        const p=total?Math.min(99,Math.round(done/total*100)):0;
+        await reportRemoteJob(job,"RUNNING",p,"Downloading "+fmtLocalBytes(done)+" / "+fmtLocalBytes(total));
+        lastReport=Date.now();
+      }
+    }
+  }finally{fs.closeSync(fh)}
+  if(fs.existsSync(finalPath))fs.rmSync(finalPath,{force:true});
+  fs.renameSync(tempPath,finalPath);
+  await reportRemoteJob(job,"READY",100,"Stored in CentralStorage");
+}
+
+function fmtLocalBytes(n){
+  n=Number(n||0);if(n<1024)return n+" B";if(n<1048576)return (n/1024).toFixed(1)+" KB";if(n<1073741824)return (n/1048576).toFixed(1)+" MB";return (n/1073741824).toFixed(2)+" GB";
+}
+
+async function processRemoteJobs(remoteJobs){
+  for(const job of remoteJobs||[]){
+    if(job.job_type!=="DOWNLOAD_CONTENT")continue;
+    if(job.status==="RUNNING")continue;
+    try{
+      console.log("Remote job:",job.job_type,job.id);
+      await downloadRemoteContent(job);
+      console.log("Remote download complete:",job.id);
+    }catch(err){
+      await reportRemoteJob(job,"PAUSED",Number(job.progress||0),err.message);
+      console.error("Remote job paused:",err.message);
+    }
+  }
+}
+
 async function processLocalQueue(){
   if(processingLocal)return;
   const job=queue.find(j=>j.source==="INBOX" && ["QUEUED","UPLOADING","PAUSED"].includes(j.status));
@@ -329,7 +401,9 @@ async function tick(){
       return;
     }
     await heartbeat();
-    await pollJobs();
+    const remoteJobs=await api("/api/agent/jobs");
+    mergeJobs(remoteJobs);
+    await processRemoteJobs(remoteJobs);
     discoverInbox();
     await processLocalQueue();
     const active=queue.filter(j=>["QUEUED","UPLOADING","PAUSED"].includes(j.status)).length;
