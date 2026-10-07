@@ -289,6 +289,29 @@ async function ensureOperationsSchema(env){
       id TEXT PRIMARY KEY,
       role_name TEXT NOT NULL UNIQUE,
       permissions_json TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS agent_local_assets (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      local_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      package_type TEXT NOT NULL DEFAULT 'DCP_FOLDER',
+      local_path_label TEXT,
+      bytes_total INTEGER NOT NULL DEFAULT 0,
+      files_total INTEGER NOT NULL DEFAULT 0,
+      cpl_id TEXT,
+      annotation_text TEXT,
+      edit_rate TEXT,
+      runtime_seconds INTEGER NOT NULL DEFAULT 0,
+      encrypted INTEGER NOT NULL DEFAULT 0,
+      has_assetmap INTEGER NOT NULL DEFAULT 0,
+      has_pkl INTEGER NOT NULL DEFAULT 0,
+      has_cpl INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'READY',
+      metadata_json TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(agent_id,local_key),
+      FOREIGN KEY (agent_id) REFERENCES agent_nodes(id) ON DELETE CASCADE
     )`
   ];
   for(const sql of statements) await env.DB.prepare(sql).run();
@@ -320,6 +343,17 @@ async function getHallDevices(env){
   const {results}=await env.DB.prepare(`
     SELECT d.*,h.name AS hall_name FROM hall_devices d
     JOIN halls h ON h.id=d.hall_id ORDER BY h.name,d.device_type,d.name
+  `).all();
+  return results||[];
+}
+
+async function getLocalAssets(env){
+  await ensureAgentSchema(env);await ensureOperationsSchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT la.*,a.name AS agent_name,a.machine_name
+    FROM agent_local_assets la
+    JOIN agent_nodes a ON a.id=la.agent_id
+    ORDER BY la.updated_at DESC
   `).all();
   return results||[];
 }
@@ -503,7 +537,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.15.0",
+        ok:true,service:"CinemaOS API",version:"0.16.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -613,7 +647,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.15.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.16.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -799,6 +833,39 @@ export default {
         Math.max(0,Math.min(100,Number(body.progress||0))),
         String(body.message||""),
         jobId,agent.id
+      ).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname === "/api/local-assets" && method === "GET") {
+      return json(await getLocalAssets(env));
+    }
+
+    if (url.pathname === "/api/agent/local-assets/report" && method === "POST") {
+      const agent=await authenticateAgent(request,env);
+      if(!agent) return json({error:"Unauthorized agent"},{status:401});
+      await ensureOperationsSchema(env);
+      const body=await request.json();
+      const localKey=String(body.localKey||"").trim();
+      if(!localKey) return json({error:"localKey is required"},{status:400});
+      const id=String(body.id||crypto.randomUUID());
+      await env.DB.prepare(`
+        INSERT INTO agent_local_assets
+        (id,agent_id,local_key,title,package_type,local_path_label,bytes_total,files_total,cpl_id,annotation_text,edit_rate,runtime_seconds,encrypted,has_assetmap,has_pkl,has_cpl,status,metadata_json,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(agent_id,local_key) DO UPDATE SET
+          title=excluded.title,package_type=excluded.package_type,local_path_label=excluded.local_path_label,
+          bytes_total=excluded.bytes_total,files_total=excluded.files_total,cpl_id=excluded.cpl_id,
+          annotation_text=excluded.annotation_text,edit_rate=excluded.edit_rate,runtime_seconds=excluded.runtime_seconds,
+          encrypted=excluded.encrypted,has_assetmap=excluded.has_assetmap,has_pkl=excluded.has_pkl,
+          has_cpl=excluded.has_cpl,status=excluded.status,metadata_json=excluded.metadata_json,
+          updated_at=CURRENT_TIMESTAMP
+      `).bind(
+        id,agent.id,localKey,String(body.title||localKey),String(body.packageType||"DCP_FOLDER"),
+        String(body.localPathLabel||localKey),Number(body.bytesTotal||0),Number(body.filesTotal||0),
+        String(body.cplId||""),String(body.annotationText||""),String(body.editRate||""),
+        Number(body.runtimeSeconds||0),body.encrypted?1:0,body.hasAssetMap?1:0,body.hasPkl?1:0,
+        body.hasCpl?1:0,String(body.status||"READY"),JSON.stringify(body)
       ).run();
       return json({ok:true});
     }
