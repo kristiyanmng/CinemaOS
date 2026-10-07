@@ -154,14 +154,28 @@ export default {
       const title = String(body.title || "").trim();
       if (!title) return json({error:"Movie title is required"},{status:400});
       const movieId=crypto.randomUUID(), versionId=crypto.randomUUID();
-      await env.DB.batch([
-        env.DB.prepare("INSERT INTO movies (id,title,distributor) VALUES (?,?,?)")
-          .bind(movieId,title,body.distributor||null),
-        env.DB.prepare("INSERT INTO movie_versions (id,movie_id,version_name,format,audio,language,status) VALUES (?,?,?,?,?,?,?)")
-          .bind(versionId,movieId,String(body.version||"Original"),String(body.format||"DCP"),
-                String(body.audio||"Unknown"),String(body.language||""),"READY")
-      ]);
-      return json({ok:true,movieId,versionId},{status:201});
+      try {
+        await env.DB.prepare(
+          "INSERT INTO movies (id,title,distributor) VALUES (?,?,?)"
+        ).bind(movieId,title,body.distributor||null).run();
+
+        await env.DB.prepare(
+          "INSERT INTO movie_versions (id,movie_id,version_name,format,audio,language,status) VALUES (?,?,?,?,?,?,?)"
+        ).bind(
+          versionId,movieId,String(body.version||"Original"),String(body.format||"DCP"),
+          String(body.audio||"Unknown"),String(body.language||""),"READY"
+        ).run();
+
+        return json({ok:true,movieId,versionId},{status:201});
+      } catch (err) {
+        try {
+          await env.DB.prepare("DELETE FROM movies WHERE id=?").bind(movieId).run();
+        } catch {}
+        return json({
+          error:"Could not save movie",
+          detail:String(err?.message || err)
+        },{status:500});
+      }
     }
 
     if (/^\/api\/movies\/[^/]+\/versions$/.test(url.pathname) && method === "POST") {
