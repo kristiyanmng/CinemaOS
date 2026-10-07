@@ -68,3 +68,9 @@ button{cursor:pointer}
 .transfer-type{font-size:9px;padding:4px 6px;border-radius:999px;background:#242c37;color:#aeb8c5}
 .transfer-item small{display:block;color:#7f8997;margin-top:6px;font-size:10px}
 @media(max-width:800px){.transfer-tray{right:12px;bottom:12px}}
+
+.auth-overlay{position:fixed;inset:0;z-index:200;background:radial-gradient(circle at top right,#171d28 0,#080a0e 40%);display:grid;place-items:center;padding:20px}
+.auth-card{width:min(420px,100%);background:#11161e;border:1px solid #29323f;border-radius:20px;padding:28px;box-shadow:0 30px 100px rgba(0,0,0,.55)}
+.auth-card .brand-mark{margin-bottom:18px}.auth-card h1{margin:0;font-size:28px}.auth-card p{color:#8893a1;margin:8px 0 24px}
+.auth-card form{display:grid;gap:14px}.auth-card label{font-size:12px;color:#929cab}.auth-card input{width:100%;margin-top:6px;background:#0b0f15;border:1px solid #2d3642;color:#eef2f7;border-radius:10px;padding:12px}
+.auth-card button{margin-top:4px}.auth-card small{min-height:18px;color:#ff91a2}
