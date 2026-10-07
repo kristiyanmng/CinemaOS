@@ -217,3 +217,28 @@ CREATE TABLE IF NOT EXISTS app_roles (
   role_name TEXT NOT NULL UNIQUE,
   permissions_json TEXT NOT NULL
 );
+
+
+CREATE TABLE IF NOT EXISTS app_users (
+  id TEXT PRIMARY KEY,
+  cinema_id TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  password_salt TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_login_at TEXT,
+  FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS app_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES app_users(id) ON DELETE CASCADE
+);
