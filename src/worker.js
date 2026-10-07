@@ -340,6 +340,23 @@ async function ensureOperationsSchema(env){
   }
 }
 
+async function getWebAgentJobs(env){
+  await ensureAgentSchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT j.id,j.agent_id,j.job_type,j.payload_json,j.status,j.progress,j.message,j.created_at,j.updated_at,
+           a.name AS agent_name,a.machine_name
+    FROM agent_jobs j
+    JOIN agent_nodes a ON a.id=j.agent_id
+    ORDER BY j.updated_at DESC
+    LIMIT 100
+  `).all();
+  return (results||[]).map(j=>{
+    let payload={};
+    try{payload=JSON.parse(j.payload_json||"{}")}catch{}
+    return {...j,payload};
+  });
+}
+
 async function getAgentTransfers(env){
   await ensureAgentSchema(env); await ensureOperationsSchema(env);
   const {results}=await env.DB.prepare(`
@@ -561,7 +578,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.16.1",
+        ok:true,service:"CinemaOS API",version:"0.16.2",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -671,7 +688,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.16.1",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.16.2",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -927,6 +944,13 @@ export default {
 
     if (url.pathname === "/api/agent-transfers" && method === "GET") {
       return json(await getAgentTransfers(env));
+    }
+
+    if (url.pathname === "/api/agent-jobs" && method === "GET") {
+      const configured=await authConfigured(env);
+      const user=configured?await currentUser(request,env):null;
+      if(configured&&!user) return json({error:"Authentication required"},{status:401});
+      return json(await getWebAgentJobs(env));
     }
 
     if (url.pathname === "/api/agent-jobs" && method === "POST") {
