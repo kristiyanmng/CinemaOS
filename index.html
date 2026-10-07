@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0a0c10" />
+  <meta name="description" content="CinemaOS — cinema operations, content delivery, halls, scheduling and automation." />
+  <title>CinemaOS</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">C</div>
+        <div class="brand-copy">
+          <strong>CinemaOS</strong>
+          <span>Control Center</span>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-page="dashboard">Dashboard</button>
+        <button class="nav-item" data-page="movies">Movies</button>
+        <button class="nav-item" data-page="delivery">Delivery</button>
+        <button class="nav-item" data-page="schedule">Schedule</button>
+        <button class="nav-item" data-page="playlists">Playlists</button>
+        <button class="nav-item" data-page="halls">Halls</button>
+        <button class="nav-item" data-page="automation">Automation</button>
+        <button class="nav-item" data-page="ai">AI Assistant</button>
+        <button class="nav-item" data-page="reports">Reports</button>
+        <button class="nav-item" data-page="settings">Settings</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-dot"></div>
+        <div>
+          <strong>Cloud online</strong>
+          <span>Cinema Agent: demo</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">Dashboard</h1>
+          <p id="pageSubtitle">Cinema Palace • Veliko Tarnovo</p>
+        </div>
+        <div class="top-actions">
+          <button class="ghost" id="quickMovie">+ Add movie</button>
+          <div class="user-chip">KM</div>
+        </div>
+      </header>
+
+      <section id="content"></section>
+    </main>
+  </div>
+
+  <dialog id="movieDialog" class="dialog">
+    <form method="dialog" id="movieForm">
+      <div class="dialog-head">
+        <div>
+          <h2>Add movie version</h2>
+          <p>Добавя запис в локалната CinemaOS библиотека.</p>
+        </div>
+        <button value="cancel" class="icon-btn" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid">
+        <label>Title<input name="title" required placeholder="Movie title" /></label>
+        <label>Version<input name="version" placeholder="BG Dub / Original" /></label>
+        <label>Format<select name="format"><option>2K DCP</option><option>4K DCP</option><option>Trailer DCP</option><option>Other</option></select></label>
+        <label>Audio<select name="audio"><option>Dolby 7.1</option><option>5.1</option><option>Atmos</option><option>Other</option></select></label>
+      </div>
+
+      <div class="dialog-actions">
+        <button value="cancel" class="ghost">Cancel</button>
+        <button type="submit" value="default" class="primary">Save movie</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="./app.js"></script>
+</body>
+</html>
