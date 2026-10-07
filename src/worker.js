@@ -159,6 +159,62 @@ async function getKdmRequests(env) {
   return results||[];
 }
 
+async function ensureAgentSchema(env){
+  const statements=[
+    `CREATE TABLE IF NOT EXISTS agent_nodes (
+      id TEXT PRIMARY KEY,
+      cinema_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      machine_name TEXT,
+      version TEXT,
+      token_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'OFFLINE',
+      last_seen_at TEXT,
+      capabilities_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (cinema_id) REFERENCES cinemas(id) ON DELETE CASCADE
+    )`,
+    `CREATE TABLE IF NOT EXISTS agent_jobs (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      job_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'QUEUED',
+      progress INTEGER NOT NULL DEFAULT 0,
+      message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (agent_id) REFERENCES agent_nodes(id) ON DELETE CASCADE
+    )`
+  ];
+  for(const sql of statements) await env.DB.prepare(sql).run();
+}
+
+async function sha256Hex(value){
+  const bytes=new TextEncoder().encode(String(value));
+  const digest=await crypto.subtle.digest("SHA-256",bytes);
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+async function authenticateAgent(request,env){
+  await ensureAgentSchema(env);
+  const auth=request.headers.get("authorization")||"";
+  if(!auth.startsWith("Bearer ")) return null;
+  const token=auth.slice(7).trim();
+  if(!token) return null;
+  const hash=await sha256Hex(token);
+  return await env.DB.prepare("SELECT * FROM agent_nodes WHERE token_hash=? LIMIT 1").bind(hash).first();
+}
+
+async function getAgents(env){
+  await ensureAgentSchema(env);
+  const {results}=await env.DB.prepare(`
+    SELECT id,cinema_id,name,machine_name,version,status,last_seen_at,capabilities_json,created_at
+    FROM agent_nodes ORDER BY created_at DESC
+  `).all();
+  return results||[];
+}
+
 async function tableCount(env) {
   if (!env.DB) return null;
   const row = await env.DB.prepare(
@@ -222,7 +278,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.11.0",
+        ok:true,service:"CinemaOS API",version:"0.12.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -235,7 +291,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.11.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.12.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -348,6 +404,80 @@ export default {
     if (url.pathname.startsWith("/api/screenings/") && method === "DELETE") {
       const id=decodeURIComponent(url.pathname.split("/").pop());
       await env.DB.prepare("DELETE FROM screenings WHERE id=?").bind(id).run();
+      return json({ok:true});
+    }
+
+    if (url.pathname === "/api/agents" && method === "GET") {
+      return json(await getAgents(env));
+    }
+
+    if (url.pathname === "/api/agents/enroll" && method === "POST") {
+      await ensureAgentSchema(env);
+      if(!env.AGENT_ENROLLMENT_KEY){
+        return json({error:"Agent enrollment is not configured",detail:"Set the Worker secret AGENT_ENROLLMENT_KEY first."},{status:503});
+      }
+      const body=await request.json();
+      if(String(body.enrollmentKey||"")!==String(env.AGENT_ENROLLMENT_KEY)){
+        return json({error:"Invalid enrollment key"},{status:403});
+      }
+      const token=crypto.randomUUID()+crypto.randomUUID().replaceAll("-","");
+      const tokenHash=await sha256Hex(token);
+      const id=crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO agent_nodes
+        (id,cinema_id,name,machine_name,version,token_hash,status,last_seen_at,capabilities_json)
+        VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP,?)
+      `).bind(
+        id,"BG-VT-PALACE-001",String(body.name||"CinemaOS Agent"),
+        String(body.machineName||""),String(body.version||"0.1.0"),tokenHash,"ONLINE",
+        JSON.stringify(body.capabilities||["persistent_queue","heartbeat"])
+      ).run();
+      return json({ok:true,agentId:id,agentToken:token},{status:201});
+    }
+
+    if (url.pathname === "/api/agent/heartbeat" && method === "POST") {
+      const agent=await authenticateAgent(request,env);
+      if(!agent) return json({error:"Unauthorized agent"},{status:401});
+      const body=await request.json().catch(()=>({}));
+      await env.DB.prepare(`
+        UPDATE agent_nodes
+        SET status='ONLINE',last_seen_at=CURRENT_TIMESTAMP,version=?,machine_name=?,capabilities_json=?
+        WHERE id=?
+      `).bind(
+        String(body.version||agent.version||""),
+        String(body.machineName||agent.machine_name||""),
+        JSON.stringify(body.capabilities||[]),
+        agent.id
+      ).run();
+      return json({ok:true,agentId:agent.id,time:new Date().toISOString()});
+    }
+
+    if (url.pathname === "/api/agent/jobs" && method === "GET") {
+      const agent=await authenticateAgent(request,env);
+      if(!agent) return json({error:"Unauthorized agent"},{status:401});
+      const {results}=await env.DB.prepare(`
+        SELECT id,job_type,payload_json,status,progress,message,created_at,updated_at
+        FROM agent_jobs
+        WHERE agent_id=? AND status IN ('QUEUED','RUNNING','PAUSED')
+        ORDER BY created_at ASC
+      `).bind(agent.id).all();
+      return json(results||[]);
+    }
+
+    if (/^\/api\/agent\/jobs\/[^/]+$/.test(url.pathname) && method === "PUT") {
+      const agent=await authenticateAgent(request,env);
+      if(!agent) return json({error:"Unauthorized agent"},{status:401});
+      const jobId=decodeURIComponent(url.pathname.split("/").pop());
+      const body=await request.json();
+      await env.DB.prepare(`
+        UPDATE agent_jobs SET status=?,progress=?,message=?,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND agent_id=?
+      `).bind(
+        String(body.status||"RUNNING"),
+        Math.max(0,Math.min(100,Number(body.progress||0))),
+        String(body.message||""),
+        jobId,agent.id
+      ).run();
       return json({ok:true});
     }
 
