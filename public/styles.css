@@ -57,3 +57,14 @@ button{cursor:pointer}
 .empty{padding:36px;text-align:center;color:#788391;border:1px dashed #303845;border-radius:14px}
 @media(max-width:1100px){.stats{grid-template-columns:repeat(2,1fr)}.three,.page-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:800px){.app-shell{grid-template-columns:1fr}.sidebar{display:none}.main{padding:0 16px 30px}.topbar{height:auto;padding:20px 0}.two,.three,.stats,.page-grid,.form-grid{grid-template-columns:1fr}.ghost#quickMovie{display:none}.timeline>div{grid-template-columns:60px 100px minmax(0,1fr)}}
+.transfer-tray{position:fixed;right:22px;bottom:22px;width:min(390px,calc(100vw - 30px));background:#11161e;border:1px solid #2a3340;border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.45);padding:14px;z-index:80;display:none}
+.transfer-tray.open{display:block}
+.transfer-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.transfer-head b,.transfer-head span{display:block}.transfer-head span{font-size:11px;color:#7f8997;margin-top:2px}
+.transfer-item{padding:10px 0;border-top:1px solid #222a35}.transfer-item:first-of-type{border-top:0}
+.transfer-line{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;margin-bottom:7px;font-size:12px}
+.transfer-line b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.transfer-line strong{font-size:11px;color:#f59a67}
+.transfer-type{font-size:9px;padding:4px 6px;border-radius:999px;background:#242c37;color:#aeb8c5}
+.transfer-item small{display:block;color:#7f8997;margin-top:6px;font-size:10px}
+@media(max-width:800px){.transfer-tray{right:12px;bottom:12px}}
