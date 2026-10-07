@@ -159,7 +159,7 @@ export default {
 
     if (url.pathname === "/api/health") {
       return json({
-        ok:true,service:"CinemaOS API",version:"0.8.0",
+        ok:true,service:"CinemaOS API",version:"0.9.0",
         database:{bound:Boolean(env.DB),tables:await tableCount(env)},
         time:new Date().toISOString()
       });
@@ -172,7 +172,7 @@ export default {
       ]);
       return json({
         cinema,halls,movies,screenings,
-        system:{apiVersion:"0.8.0",storageMode:"central",agentStatus:"demo",database:"D1"}
+        system:{apiVersion:"0.9.0",storageMode:"central",agentStatus:"demo",database:"D1"}
       });
     }
 
@@ -380,8 +380,12 @@ export default {
     if (url.pathname.startsWith("/api/content-assets/") && method === "DELETE") {
       await ensureContentSchema(env);
       const id=decodeURIComponent(url.pathname.split("/").pop());
+      const asset=await env.DB.prepare("SELECT storage_ref FROM content_assets WHERE id=?").bind(id).first();
       await env.DB.prepare("UPDATE playlist_items SET source_ref=NULL WHERE source_ref=?").bind(id).run().catch(()=>{});
       await env.DB.prepare("DELETE FROM content_assets WHERE id=?").bind(id).run();
+      if (asset?.storage_ref && env.CONTENT) {
+        await env.CONTENT.delete(asset.storage_ref).catch(()=>{});
+      }
       return json({ok:true});
     }
 
