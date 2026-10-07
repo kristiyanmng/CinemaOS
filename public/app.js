@@ -47,12 +47,15 @@ function initials(name){
 }
 
 function showLogin(){
+  document.querySelectorAll("dialog[open]").forEach(d=>{try{d.close()}catch{}});
   let ov=document.querySelector("#authOverlay");
   if(!ov){
     ov=document.createElement("div");ov.id="authOverlay";ov.className="auth-overlay";
     document.body.appendChild(ov);
   }
   ov.innerHTML='<div class="auth-card"><div class="brand-mark">C</div><h1>CinemaOS</h1><p>Sign in to CinemaOS Control Center</p><form id="loginForm"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">Sign in</button><small id="loginError"></small></form></div>';
+  const emailInput=ov.querySelector('input[name="email"]');
+  setTimeout(()=>emailInput?.focus(),50);
   ov.querySelector("#loginForm").onsubmit=async e=>{
     e.preventDefault();const fd=new FormData(e.currentTarget);
     try{
@@ -457,7 +460,7 @@ if(dlg){const save=dlg.querySelector('button[type="submit"]');if(save)save.style
 function openSetupAdminModal(){
 modal("Create first administrator",'<div class="form-grid"><label>Display name<input name="displayName" required value="CinemaOS Administrator"></label><label>Email<input name="email" type="email" required></label><label>Password<input name="password" type="password" minlength="10" required></label><label>ADMIN_SETUP_KEY<input name="setupKey" type="password" required></label></div>',async fd=>{
 await api.send("/api/auth/setup-admin","POST",{displayName:fd.get("displayName"),email:fd.get("email"),password:fd.get("password"),setupKey:fd.get("setupKey")});
-await loadAuthStatus();pages.settings();showLogin()
+await loadAuthStatus();pages.settings();setTimeout(()=>showLogin(),0)
 });
 }
 
