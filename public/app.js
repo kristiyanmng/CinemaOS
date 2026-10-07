@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],agents:[],agentTransfers:[],hallDevices:[],distributors:[],distributionDeliveries:[],localAssets:[],localAssignments:[],users:[],auth:{configured:false,user:null,setupSecretConfigured:false},storageStatus:null,transfers:[],downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],agents:[],agentTransfers:[],agentJobs:[],hallDevices:[],distributors:[],distributionDeliveries:[],localAssets:[],localAssignments:[],users:[],auth:{configured:false,user:null,setupSecretConfigured:false},storageStatus:null,transfers:[],downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -107,6 +107,7 @@ async function refresh(){
   state.kdmRequests=await api.get("/api/kdm-requests");
   state.agents=await api.get("/api/agents");
   state.agentTransfers=await api.get("/api/agent-transfers");
+  state.agentJobs=await api.get("/api/agent-jobs");
   state.hallDevices=await api.get("/api/hall-devices");
   state.distributors=await api.get("/api/distributors");
   state.distributionDeliveries=await api.get("/api/distribution-deliveries");
@@ -211,10 +212,14 @@ movies(){
 content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Movie Library</h2><p class="muted">Movies and all available versions.</p></div><button class="primary" id="newMovie">+ Add movie</button></div></div><div class="page-grid" id="moviesGrid"></div>';
 renderMovies();document.querySelector("#newMovie").onclick=()=>movieDialog.showModal()},
 delivery(){
-const agentRows=state.agentTransfers.map(t=>'<tr><td>'+t.file_name+'</td><td>AGENT '+t.direction+'</td><td>'+statusPill(t.status)+'</td><td><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.progress+'% • '+fmtBytes(t.bytes_done)+' / '+fmtBytes(t.bytes_total)+' • '+fmtSpeed(t.speed_bps)+(t.message?' • '+t.message:'')+'</small></td></tr>').join("");
+const cloudRows=state.agentTransfers.map(t=>'<tr><td>'+t.file_name+'</td><td>UPLOAD TO CLOUD</td><td>'+statusPill(t.status)+'</td><td><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.progress+'% • '+fmtBytes(t.bytes_done)+' / '+fmtBytes(t.bytes_total)+' • '+fmtSpeed(t.speed_bps)+(t.message?' • '+t.message:'')+'</small></td></tr>').join("");
+const jobRows=state.agentJobs.filter(j=>j.job_type==="DOWNLOAD_CONTENT").map(j=>{
+  const name=j.payload?.fileName||j.payload?.title||"Content";
+  return '<tr><td>'+name+'<br><small>'+((j.agent_name||"CinemaOS Agent"))+'</small></td><td>CLOUD → CINEMA</td><td>'+statusPill(j.status)+'</td><td><div class="progress"><i style="width:'+Number(j.progress||0)+'%"></i></div><small>'+Number(j.progress||0)+'%'+(j.message?' • '+j.message:'')+'</small></td></tr>'
+}).join("");
 const browserRows=state.transfers.map(t=>'<tr><td>'+t.name+'</td><td>BROWSER '+t.type+'</td><td>'+statusPill(t.status)+'</td><td><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.progress+'%'+(t.detail?' • '+t.detail:'')+'</small>'+(t.status==="PAUSED"&&t.upload?'<div style="margin-top:8px;display:flex;gap:8px"><button class="ghost" data-resume-transfer="'+t.id+'">Resume</button><button class="danger" data-cancel-transfer="'+t.id+'">Cancel</button></div>':'')+'</td></tr>').join("");
-content.innerHTML='<div class="card"><div class="card-head"><div><h2>Live Transfers</h2><p class="muted">Agent transfers keep running even when the browser is closed.</p></div><span class="pill good">LIVE</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Content</th><th>Direction</th><th>Status</th><th>Progress</th></tr></thead><tbody>'+(agentRows+browserRows||'<tr><td colspan="4">No transfers.</td></tr>')+'</tbody></table></div></div>'+
-'<div class="card"><div class="notice">For permanent cinema transfers use CinemaOS Agent. Browser transfers are kept only as a fallback.</div></div>'
+content.innerHTML='<div class="card"><div class="card-head"><div><h2>Live Transfers</h2><p class="muted">Uploads and cinema downloads reported live by CinemaOS Agent.</p></div><span class="pill good">LIVE</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Content</th><th>Direction</th><th>Status</th><th>Progress</th></tr></thead><tbody>'+(jobRows+cloudRows+browserRows||'<tr><td colspan="4">No transfers.</td></tr>')+'</tbody></table></div></div>'+
+'<div class="card"><div class="notice">CLOUD → CINEMA jobs continue through CinemaOS Agent even when this browser is closed.</div></div>'
 },
 schedule(){
 content.innerHTML='<div class="card"><div class="card-head"><h2>Schedule</h2><button class="primary" id="newScreening">+ New screening</button></div><div class="table-wrap"><table class="table"><thead><tr><th>Start</th><th>Hall</th><th>Movie</th><th>Version</th><th>Status</th><th></th></tr></thead><tbody>'+
@@ -248,11 +253,12 @@ document.querySelector("#newDelivery").onclick=()=>openDeliveryModal()
 
 storage(){
 const total=state.localAssets.reduce((s,a)=>s+Number(a.bytes_total||0),0);
+const cinemaDownloads=state.agentJobs.filter(j=>j.job_type==="DOWNLOAD_CONTENT");
 content.innerHTML=
 '<div class="grid stats">'+
 '<article class="card stat"><span>Local DCPs</span><strong>'+state.localAssets.length+'</strong><small>Registered by Agent</small></article>'+
 '<article class="card stat"><span>Local data</span><strong>'+fmtBytes(total)+'</strong><small>Detected package size</small></article>'+
-'<article class="card stat"><span>Assignments</span><strong>'+state.localAssignments.length+'</strong><small>Hall destinations</small></article>'+
+'<article class="card stat"><span>Cinema downloads</span><strong>'+cinemaDownloads.filter(j=>["QUEUED","RUNNING","PAUSED"].includes(j.status)).length+'</strong><small>Active Agent jobs</small></article>'+
 '<article class="card stat"><span>Online Agents</span><strong>'+state.agents.filter(a=>a.status==="ONLINE").length+'</strong><small>Persistent workers</small></article>'+
 '</div>'+
 '<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Central Storage</h2><p class="muted">Unpacked DCP folders detected by CinemaOS Agent.</p></div><span class="pill good">LIVE</span></div>'+
@@ -264,6 +270,7 @@ content.innerHTML=
   return '<tr><td><b>'+a.title+'</b><br><small>'+a.local_path_label+' • '+a.machine_name+'</small></td><td>'+fmtBytes(a.bytes_total)+'</td><td>'+Math.round(Number(a.runtime_seconds||0)/60)+' min</td><td>'+(complete?'ASSETMAP + PKL + CPL':'Partial DCP')+'</td><td>'+(a.encrypted?'<span class="pill warn">ENCRYPTED</span>':'<span class="pill good">OPEN</span>')+'</td><td>'+halls+'</td><td><button class="primary" data-assign-local="'+a.id+'">Assign to hall</button></td></tr>'
 }).join("")||'<tr><td colspan="7">No unpacked DCP folders registered yet.</td></tr>')+
 '</tbody></table></div><div class="notice" style="margin-top:16px">Drop an unpacked DCP folder into C:\\ProgramData\\CinemaOSAgent\\Inbox. CinemaOS reads the package metadata directly; no ZIP is required.</div></div>'+
+'<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Downloads to cinema</h2><p class="muted">Cloud content being stored by CinemaOS Agent.</p></div></div>'+(cinemaDownloads.map(j=>'<div class="queue-row"><div><b>'+(j.payload?.fileName||"Content")+'</b><span>'+(j.agent_name||"CinemaOS Agent")+' • '+j.status+'</span><span>'+Number(j.progress||0)+'%'+(j.message?' • '+j.message:'')+'</span></div><div style="min-width:180px"><div class="progress"><i style="width:'+Number(j.progress||0)+'%"></i></div></div></div>').join("")||'<div class="empty">No cinema downloads yet.</div>')+'</div>'+
 '<div class="card"><div class="card-head"><div><h2>Hall ingest preparation</h2><p class="muted">Assignments prepare a legal ingest workflow. No vendor command is sent until a documented adapter is configured for that hall.</p></div></div>'+
 (state.localAssignments.map(x=>'<div class="queue-row"><div><b>'+x.asset_title+'</b><span>'+x.hall_name+' • '+x.status+'</span><span>'+(x.notes||"No notes")+'</span></div>'+statusPill(x.status)+'</div>').join("")||'<div class="empty">No hall assignments yet.</div>')+'</div>'
 },
@@ -690,11 +697,11 @@ movieForm.addEventListener("submit",async e=>{e.preventDefault();const fd=new Fo
 
 async function liveRefresh(){
 try{
-  const [agents,agentTransfers,assets,localAssets,localAssignments]=await Promise.all([
-    api.get("/api/agents"),api.get("/api/agent-transfers"),api.get("/api/content-assets"),
-    api.get("/api/local-assets"),api.get("/api/local-asset-assignments")
+  const [agents,agentTransfers,agentJobs,assets,localAssets,localAssignments]=await Promise.all([
+    api.get("/api/agents"),api.get("/api/agent-transfers"),api.get("/api/agent-jobs"),
+    api.get("/api/content-assets"),api.get("/api/local-assets"),api.get("/api/local-asset-assignments")
   ]);
-  state.agents=agents;state.agentTransfers=agentTransfers;state.contentAssets=assets;
+  state.agents=agents;state.agentTransfers=agentTransfers;state.agentJobs=agentJobs;state.contentAssets=assets;
   state.localAssets=localAssets;state.localAssignments=localAssignments;
   const page=document.querySelector(".nav-item.active")?.dataset.page;
   if(["delivery","contentLibrary","storage","settings","dashboard"].includes(page)) (pages[page]||pages.dashboard)();
