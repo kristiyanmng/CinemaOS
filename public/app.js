@@ -67,7 +67,7 @@ ${state.halls.map(h=>'<div class="hall-row"><div><b>'+h.name+'</b><span>'+h.seat
 </div>`},
 contentLibrary(){
 content.innerHTML=
-'<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Content Library</h2><p class="muted">Trailers, advertisements and other preshow files.</p></div><div style="display:flex;gap:8px"><button class="ghost" id="newContentAsset">+ Metadata only</button><button class="primary" id="uploadContentAsset">Upload file</button></div></div><div class="notice">R2 Storage: '+(state.storageStatus?.configured?"CONNECTED":"NOT CONFIGURED")+' • Direct browser upload is intended for trailers, ads and other smaller assets.</div></div>'+
+'<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Content Library</h2><p class="muted">DCP trailers, advertisements and other preshow packages.</p></div><div style="display:flex;gap:8px"><button class="ghost" id="newContentAsset">+ Metadata only</button><button class="primary" id="uploadContentAsset">Import DCP</button></div></div><div class="notice">R2 Storage: '+(state.storageStatus?.configured?"CONNECTED":"NOT CONFIGURED")+' • Multipart R2 upload supports large DCP ZIP/packages; full feature DCP folders will use CinemaOS Agent.</div></div>'+
 '<div class="page-grid">'+
 (state.contentAssets.map(a=>'<article class="movie-card"><div class="card-head"><h3>'+a.title+'</h3><span class="pill '+(a.asset_type==="TRAILER"?"playing":a.asset_type==="AD"?"warn":"")+'">'+a.asset_type+'</span></div><p>'+(a.duration_seconds||0)+' sec • '+(a.format||"DCP")+'</p><div class="meta"><span>'+(a.language||"No language")+'</span><span>'+a.status+'</span><span>'+(a.storage_ref?"R2 FILE":"METADATA")+'</span></div><div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">'+(a.storage_ref?'<button class="ghost" data-preview-content="'+a.id+'">Preview / Open</button>':'')+'<button class="ghost" data-edit-content="'+a.id+'">Edit</button><button class="danger" data-delete-content="'+a.id+'">Delete</button></div></article>').join("")||'<div class="empty">No reusable content yet.</div>')+
 '</div>';
@@ -110,48 +110,114 @@ if(!state.movies.length){grid.innerHTML='<div class="empty">No movies yet.</div>
 grid.innerHTML=state.movies.map(m=>'<article class="movie-card"><div class="card-head"><h3>'+m.title+'</h3><span class="pill good">'+(m.versions?.length||0)+' VERSION(S)</span></div><p>'+(m.distributor||"No distributor")+'</p><div class="meta">'+(m.versions||[]).map(v=>'<span>'+v.name+' • '+(v.format||"DCP")+' • '+(v.audio||"")+'</span>').join("")+'</div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-add-version="'+m.id+'">+ Version</button><button class="danger" data-delete-movie="'+m.id+'">Delete</button></div></article>').join("")
 }
 
-function uploadWithProgress(file,url,onProgress){
-return new Promise((resolve,reject)=>{
-  const xhr=new XMLHttpRequest();
-  xhr.open("POST",url,true);
-  xhr.setRequestHeader("content-type",file.type||"application/octet-stream");
-  xhr.upload.onprogress=e=>{if(e.lengthComputable)onProgress(Math.round((e.loaded/e.total)*100))};
-  xhr.onload=()=>{
-    let data={};
-    try{data=JSON.parse(xhr.responseText||"{}")}catch{}
-    if(xhr.status>=200&&xhr.status<300)resolve(data);
-    else reject(new Error(data.detail?(data.error+": "+data.detail):(data.error||("HTTP "+xhr.status))));
-  };
-  xhr.onerror=()=>reject(new Error("Upload failed"));
-  xhr.send(file);
-});
+async function multipartUpload(file,meta,onProgress){
+  const init=await api.send("/api/storage/multipart/init","POST",{
+    assetType:meta.assetType,
+    title:meta.title,
+    fileName:file.name,
+    contentType:file.type||"application/octet-stream"
+  });
+
+  const chunkSize=20*1024*1024;
+  const totalParts=Math.ceil(file.size/chunkSize);
+  const parts=[];
+
+  try{
+    for(let i=0;i<totalParts;i++){
+      const start=i*chunkSize;
+      const end=Math.min(file.size,start+chunkSize);
+      const blob=file.slice(start,end);
+
+      const qs=new URLSearchParams({
+        key:init.key,
+        uploadId:init.uploadId,
+        partNumber:String(i+1)
+      });
+
+      const r=await fetch("/api/storage/multipart/part?"+qs.toString(),{
+        method:"PUT",
+        body:blob
+      });
+
+      const data=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(data.detail?(data.error+": "+data.detail):(data.error||("HTTP "+r.status)));
+      parts.push({partNumber:data.partNumber,etag:data.etag});
+
+      onProgress(Math.round(((i+1)/totalParts)*100));
+    }
+
+    await api.send("/api/storage/multipart/complete","POST",{
+      key:init.key,
+      uploadId:init.uploadId,
+      parts
+    });
+
+    return init;
+  }catch(err){
+    try{
+      await api.send("/api/storage/multipart/abort","POST",{
+        key:init.key,
+        uploadId:init.uploadId
+      });
+    }catch{}
+    throw err;
+  }
 }
 
 function openUploadContentModal(){
 if(!state.storageStatus?.configured){alert("R2 is not connected yet.");return}
+
 const d=document.createElement("dialog");d.className="dialog";
-d.innerHTML='<form><div class="dialog-head"><div><h2>Upload content file</h2><p>For trailers, ads and other preshow assets.</p></div><button type="button" class="icon-btn" data-close>×</button></div><div class="form-grid"><label>Type<select name="assetType"><option value="TRAILER">Trailer</option><option value="AD">Advertisement</option><option value="OTHER">Other</option></select></label><label>Title<input name="title" required></label><label>Duration (sec)<input name="duration" type="number" min="0" value="30"></label><label>Language<input name="language" placeholder="bg / en"></label><label style="grid-column:1/-1">File<input name="file" type="file" required></label></div><div class="download" style="margin-top:18px"><div class="download-top"><b id="uploadLabel">Waiting</b><span id="uploadPct">0%</span></div><div class="progress"><i id="uploadBar" style="width:0%"></i></div></div><div class="dialog-actions"><button type="button" class="ghost" data-close>Cancel</button><button type="submit" class="primary">Upload</button></div></form>';
+d.innerHTML='<form><div class="dialog-head"><div><h2>Import DCP package</h2><p>Upload a ZIP/package containing trailer, advertisement or other cinema content.</p></div><button type="button" class="icon-btn" data-close>×</button></div><div class="form-grid"><label>Type<select name="assetType"><option value="TRAILER">Trailer DCP</option><option value="AD">Advertisement DCP</option><option value="OTHER">Other DCP</option></select></label><label>Title<input name="title" required></label><label>Duration (sec)<input name="duration" type="number" min="0" value="30"></label><label>Language<input name="language" placeholder="bg / en"></label><label style="grid-column:1/-1">DCP package / ZIP<input name="file" type="file" accept=".zip,.dcp,application/zip,application/octet-stream" required></label></div><div class="notice" style="margin-top:14px">Large files are uploaded to R2 in 20 MB parts. For full feature DCP folders, CinemaOS Agent will later ingest directly from local disk/NAS without ZIP.</div><div class="download" style="margin-top:18px"><div class="download-top"><b id="uploadLabel">Waiting</b><span id="uploadPct">0%</span></div><div class="progress"><i id="uploadBar" style="width:0%"></i></div></div><div class="dialog-actions"><button type="button" class="ghost" data-close>Cancel</button><button type="submit" class="primary">Import DCP</button></div></form>';
+
 document.body.appendChild(d);
 d.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>d.close());
 d.addEventListener("close",()=>d.remove());
+
 d.querySelector("form").addEventListener("submit",async e=>{
   e.preventDefault();
   const fd=new FormData(e.currentTarget);
   const file=fd.get("file");
   if(!(file instanceof File)||!file.size)return;
-  if(file.size>95*1024*1024){alert("This direct browser uploader is limited to about 95 MB. Larger cinema files will use CinemaOS Agent.");return}
-  const submit=e.currentTarget.querySelector('button[type="submit"]');submit.disabled=true;
-  const bar=d.querySelector("#uploadBar"),pct=d.querySelector("#uploadPct"),label=d.querySelector("#uploadLabel");
+
+  const submit=e.currentTarget.querySelector('button[type="submit"]');
+  submit.disabled=true;
+
+  const bar=d.querySelector("#uploadBar");
+  const pct=d.querySelector("#uploadPct");
+  const label=d.querySelector("#uploadLabel");
+
   try{
-    label.textContent="Uploading "+file.name;
-    const qs=new URLSearchParams({type:fd.get("assetType"),title:fd.get("title"),filename:file.name});
-    const uploaded=await uploadWithProgress(file,"/api/storage/upload?"+qs.toString(),p=>{bar.style.width=p+"%";pct.textContent=p+"%"});
-    label.textContent="Saving metadata";
-    await api.send("/api/content-assets","POST",{assetType:fd.get("assetType"),title:fd.get("title"),durationSeconds:Number(fd.get("duration")),format:file.type||"File",language:fd.get("language"),storageRef:uploaded.key});
+    label.textContent="Uploading DCP package "+file.name;
+
+    const uploaded=await multipartUpload(file,{
+      assetType:fd.get("assetType"),
+      title:fd.get("title")
+    },p=>{
+      bar.style.width=p+"%";
+      pct.textContent=p+"%";
+    });
+
+    label.textContent="Saving CinemaOS metadata";
+
+    await api.send("/api/content-assets","POST",{
+      assetType:fd.get("assetType"),
+      title:fd.get("title"),
+      durationSeconds:Number(fd.get("duration")),
+      format:"DCP package",
+      language:fd.get("language"),
+      storageRef:uploaded.key
+    });
+
     state.contentAssets=await api.get("/api/content-assets");
-    d.close();pages.contentLibrary();
-  }catch(err){submit.disabled=false;alert(err.message)}
+    d.close();
+    pages.contentLibrary();
+  }catch(err){
+    submit.disabled=false;
+    alert(err.message);
+  }
 });
+
 d.showModal();
 }
 
