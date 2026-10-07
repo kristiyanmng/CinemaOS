@@ -1,0 +1,7 @@
+{
+  "apiBase": "https://cinemaos.kristianmarkov5.workers.dev",
+  "name": "Cinema Palace Agent",
+  "enrollmentKey": "PASTE-YOUR-ONE-TIME-ENROLLMENT-KEY-HERE",
+  "agentId": "",
+  "agentToken": ""
+}
