@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 Write-Host ""
 Write-Host "CinemaOS Agent Setup" -ForegroundColor Cyan
@@ -7,45 +7,62 @@ Write-Host "--------------------"
 $agentDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $agentDir
 
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  Write-Host ""
-  Write-Host "Node.js 20+ is required." -ForegroundColor Yellow
-  Write-Host "Install Node.js LTS from https://nodejs.org/ and run this setup again."
-  Read-Host "Press Enter to exit"
-  exit 1
+$programData = $env:ProgramData
+if ([string]::IsNullOrWhiteSpace($programData)) {
+  $programData = "C:\ProgramData"
 }
 
-$nodeVersion = node -v
-Write-Host "Node.js detected: $nodeVersion" -ForegroundColor Green
-
-npm install
-
-$programData = $env:ProgramData
 $dataDir = Join-Path $programData "CinemaOSAgent"
 $configPath = Join-Path $dataDir "config.json"
+$queuePath = Join-Path $dataDir "queue.json"
 
+Write-Host "Creating CinemaOS Agent data folder..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
 if (-not (Test-Path $configPath)) {
-  $config = @{
-    apiBase = "https://cinemaos.kristianmarkov5.workers.dev"
-    name = "Cinema Palace Agent"
-    enrollmentKey = ""
-    agentId = ""
-    agentToken = ""
-  } | ConvertTo-Json
-  Set-Content -Path $configPath -Value $config -Encoding UTF8
+  $config = @'
+{
+  "apiBase": "https://cinemaos.kristianmarkov5.workers.dev",
+  "name": "Cinema Palace Agent",
+  "enrollmentKey": "",
+  "agentId": "",
+  "agentToken": ""
+}
+'@
+  [System.IO.File]::WriteAllText($configPath, $config, New-Object System.Text.UTF8Encoding($false))
+  Write-Host "Created config.json" -ForegroundColor Green
+} else {
+  Write-Host "config.json already exists - keeping existing file." -ForegroundColor Yellow
+}
+
+if (-not (Test-Path $queuePath)) {
+  [System.IO.File]::WriteAllText($queuePath, "[]", New-Object System.Text.UTF8Encoding($false))
+  Write-Host "Created queue.json" -ForegroundColor Green
+}
+
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  Write-Host ""
+  Write-Host "Node.js 20+ is not installed yet." -ForegroundColor Yellow
+  Write-Host "The config files were still created successfully."
+  Write-Host "Install Node.js LTS, then run Setup-Agent.bat again."
+} else {
+  $nodeVersion = node -v
+  Write-Host "Node.js detected: $nodeVersion" -ForegroundColor Green
+  try {
+    npm install
+  } catch {
+    Write-Host "npm install returned an error, but Agent configuration was created." -ForegroundColor Yellow
+  }
 }
 
 Write-Host ""
+Write-Host "DONE" -ForegroundColor Green
 Write-Host "Configuration file:" -ForegroundColor Cyan
 Write-Host $configPath
 Write-Host ""
-Write-Host "Next:" -ForegroundColor Yellow
-Write-Host "1. Open the config file above with Notepad."
-Write-Host "2. Put your Cloudflare AGENT_ENROLLMENT_KEY value in enrollmentKey."
-Write-Host "3. Save it."
-Write-Host "4. Run Start-Agent.bat."
+Write-Host "Open this file and set enrollmentKey to your Cloudflare secret value."
+Write-Host "Then run Start-Agent.bat."
 Write-Host ""
-Write-Host "After successful enrollment the key is removed and replaced by an Agent token." -ForegroundColor Green
+
+Start-Process explorer.exe $dataDir
 Read-Host "Press Enter to finish"
