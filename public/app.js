@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -36,6 +36,7 @@ async function refresh(){
   const d=await api.get("/api/bootstrap");
   Object.assign(state,{cinema:d.cinema,halls:d.halls||[],movies:d.movies||[],screenings:d.screenings||[]});
   state.playlists=await api.get("/api/playlists");
+  state.contentAssets=await api.get("/api/content-assets");
   subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
 
@@ -63,6 +64,14 @@ ${state.halls.map(h=>'<div class="hall-row"><div><b>'+h.name+'</b><span>'+h.seat
 <article class="card"><div class="card-head"><h2>Today's / upcoming screenings</h2><button class="link" data-go="schedule">Open</button></div>
 <div class="timeline">${state.screenings.slice(0,5).map(s=>'<div><time>'+new Date(s.starts_at).toLocaleTimeString("bg-BG",{hour:"2-digit",minute:"2-digit"})+'</time><span>'+s.hall_name+'</span><b>'+s.movie_title+'</b></div>').join("")||'<div class="empty">No screenings.</div>'}</div></article>
 </div>`},
+contentLibrary(){
+content.innerHTML=
+'<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Content Library</h2><p class="muted">Reusable trailers, advertisements and other preshow content.</p></div><button class="primary" id="newContentAsset">+ Add content</button></div></div>'+
+'<div class="page-grid">'+
+(state.contentAssets.map(a=>'<article class="movie-card"><div class="card-head"><h3>'+a.title+'</h3><span class="pill '+(a.asset_type==="TRAILER"?"playing":a.asset_type==="AD"?"warn":"")+'">'+a.asset_type+'</span></div><p>'+(a.duration_seconds||0)+' sec • '+(a.format||"DCP")+'</p><div class="meta"><span>'+(a.language||"No language")+'</span><span>'+a.status+'</span></div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-edit-content="'+a.id+'">Edit</button><button class="danger" data-delete-content="'+a.id+'">Delete</button></div></article>').join("")||'<div class="empty">No reusable content yet.</div>')+
+'</div>';
+document.querySelector("#newContentAsset").onclick=()=>openContentAssetModal()
+},
 movies(){
 content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Movie Library</h2><p class="muted">Movies and all available versions.</p></div><button class="primary" id="newMovie">+ Add movie</button></div></div><div class="page-grid" id="moviesGrid"></div>';
 renderMovies();document.querySelector("#newMovie").onclick=()=>movieDialog.showModal()},
@@ -99,6 +108,15 @@ if(!state.movies.length){grid.innerHTML='<div class="empty">No movies yet.</div>
 grid.innerHTML=state.movies.map(m=>'<article class="movie-card"><div class="card-head"><h3>'+m.title+'</h3><span class="pill good">'+(m.versions?.length||0)+' VERSION(S)</span></div><p>'+(m.distributor||"No distributor")+'</p><div class="meta">'+(m.versions||[]).map(v=>'<span>'+v.name+' • '+(v.format||"DCP")+' • '+(v.audio||"")+'</span>').join("")+'</div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-add-version="'+m.id+'">+ Version</button><button class="danger" data-delete-movie="'+m.id+'">Delete</button></div></article>').join("")
 }
 
+function openContentAssetModal(asset){
+modal(asset?"Edit content":"Add content",'<div class="form-grid"><label>Type<select name="assetType"><option value="TRAILER">Trailer</option><option value="AD">Advertisement</option><option value="OTHER">Other</option></select></label><label>Title<input name="title" required value="'+(asset?.title||"")+'"></label><label>Duration (sec)<input name="duration" type="number" min="0" value="'+(asset?.duration_seconds||30)+'"></label><label>Format<select name="format"><option>DCP</option><option>2K DCP</option><option>4K DCP</option><option>Other</option></select></label><label>Language<input name="language" value="'+(asset?.language||"")+'" placeholder="bg / en"></label><label>Status<select name="status"><option>READY</option><option>PROCESSING</option><option>OFFLINE</option></select></label></div>',async fd=>{
+const payload={assetType:fd.get("assetType"),title:fd.get("title"),durationSeconds:Number(fd.get("duration")),format:fd.get("format"),language:fd.get("language"),status:fd.get("status")};
+if(asset) await api.send("/api/content-assets/"+asset.id,"PUT",payload);
+else await api.send("/api/content-assets","POST",payload);
+state.contentAssets=await api.get("/api/content-assets");pages.contentLibrary()
+});
+}
+
 function openHallModal(hall){
 modal(hall?"Edit hall":"Add hall",'<div class="form-grid"><label>Name<input name="name" required value="'+(hall?.name||"")+'"></label><label>Seats<input name="seats" type="number" min="0" value="'+(hall?.seats||0)+'"></label><label>Status<select name="status"><option>IDLE</option><option>READY</option><option>PLAYING</option><option>OFFLINE</option></select></label></div>',async fd=>{
 if(hall)await api.send("/api/halls/"+hall.id,"PUT",{name:fd.get("name"),seats:Number(fd.get("seats")),status:fd.get("status")});
@@ -126,9 +144,18 @@ state.playlists=await api.get("/api/playlists");pages.playlists()
 }
 
 function openPlaylistItemModal(playlistId,itemType){
-const defaultTitle=itemType==="AD"?"Advertisement":itemType==="TRAILER"?"Trailer":"Automation Cue";
-modal("Add "+itemType,'<div class="form-grid"><label>Title<input name="title" required value="'+defaultTitle+'"></label><label>Duration (sec)<input name="duration" type="number" min="0" value="'+(itemType==="CUE"?0:30)+'"></label><label>Lights %<input name="lights" type="number" min="0" max="100" value="'+(itemType==="AD"?70:itemType==="TRAILER"?50:20)+'"></label></div>',async fd=>{
-await api.send("/api/playlists/"+playlistId+"/items","POST",{itemType,title:fd.get("title"),durationSeconds:Number(fd.get("duration")),cue:{lights:Number(fd.get("lights"))}});
+if(itemType==="CUE"){
+  modal("Add automation cue",'<div class="form-grid"><label>Title<input name="title" required value="Automation Cue"></label><label>Lights %<input name="lights" type="number" min="0" max="100" value="20"></label></div>',async fd=>{
+    await api.send("/api/playlists/"+playlistId+"/items","POST",{itemType:"CUE",title:fd.get("title"),durationSeconds:0,cue:{lights:Number(fd.get("lights"))}});
+    state.playlists=await api.get("/api/playlists");pages.playlists()
+  });
+  return;
+}
+const matches=state.contentAssets.filter(a=>a.asset_type===itemType&&a.status==="READY");
+if(!matches.length){alert("No READY "+itemType+" content in Content Library.");return}
+modal("Add "+itemType+' from library','<div class="form-grid"><label>Content<select name="assetId">'+matches.map(a=>'<option value="'+a.id+'">'+a.title+' • '+a.duration_seconds+' sec</option>').join("")+'</select></label><label>Lights %<input name="lights" type="number" min="0" max="100" value="'+(itemType==="AD"?70:50)+'"></label></div>',async fd=>{
+const asset=matches.find(a=>a.id===fd.get("assetId"));
+await api.send("/api/playlists/"+playlistId+"/items","POST",{itemType,title:asset.title,sourceRef:asset.id,durationSeconds:Number(asset.duration_seconds||0),cue:{lights:Number(fd.get("lights"))}});
 state.playlists=await api.get("/api/playlists");pages.playlists()
 });
 }
@@ -157,6 +184,8 @@ const ds=e.target.closest("[data-delete-screening]");if(ds&&confirm("Delete this
 const apiBtn=e.target.closest("[data-add-playlist-item]");if(apiBtn)openPlaylistItemModal(apiBtn.dataset.addPlaylistItem,apiBtn.dataset.itemType);
 const di=e.target.closest("[data-delete-item]");if(di&&confirm("Delete this playlist item?")){await api.send("/api/playlist-items/"+encodeURIComponent(di.dataset.deleteItem),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
 const dp=e.target.closest("[data-delete-playlist]");if(dp&&confirm("Delete this playlist?")){await api.send("/api/playlists/"+encodeURIComponent(dp.dataset.deletePlaylist),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
+const ec=e.target.closest("[data-edit-content]");if(ec)openContentAssetModal(state.contentAssets.find(a=>a.id===ec.dataset.editContent));
+const dc=e.target.closest("[data-delete-content]");if(dc&&confirm("Delete this content item?")){await api.send("/api/content-assets/"+encodeURIComponent(dc.dataset.deleteContent),"DELETE");state.contentAssets=await api.get("/api/content-assets");pages.contentLibrary()}
 });
 
 movieForm.addEventListener("submit",async e=>{e.preventDefault();const fd=new FormData(movieForm);try{await api.send("/api/movies","POST",{title:fd.get("title"),version:fd.get("version")||"Original",format:fd.get("format"),audio:fd.get("audio")});state.movies=await api.get("/api/movies");movieForm.reset();movieDialog.close();openPage("movies")}catch(err){alert(err.message)}});
