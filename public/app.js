@@ -167,7 +167,7 @@ movies(){
 content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Movie Library</h2><p class="muted">Movies and all available versions.</p></div><button class="primary" id="newMovie">+ Add movie</button></div></div><div class="page-grid" id="moviesGrid"></div>';
 renderMovies();document.querySelector("#newMovie").onclick=()=>movieDialog.showModal()},
 delivery(){
-const rows=state.transfers.map(t=>'<tr><td>'+t.name+'</td><td>'+t.type+'</td><td>'+statusPill(t.status)+'</td><td><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.progress+'%'+(t.detail?' • '+t.detail:'')+'</small></td></tr>').join("");
+const rows=state.transfers.map(t=>'<tr><td>'+t.name+'</td><td>'+t.type+'</td><td>'+statusPill(t.status)+'</td><td><div class="progress"><i style="width:'+t.progress+'%"></i></div><small>'+t.progress+'%'+(t.detail?' • '+t.detail:'')+'</small>'+(t.status==="PAUSED"&&t.upload?'<div style="margin-top:8px;display:flex;gap:8px"><button class="ghost" data-resume-transfer="'+t.id+'">Resume</button><button class="danger" data-cancel-transfer="'+t.id+'">Cancel</button></div>':'')+'</td></tr>').join("");
 content.innerHTML='<div class="card"><div class="card-head"><div><h2>Background Transfers</h2><p class="muted">Uploads continue while you use other CinemaOS pages.</p></div><span class="pill good">LIVE</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Content</th><th>Direction</th><th>Status</th><th>Progress</th></tr></thead><tbody>'+(rows||'<tr><td colspan="4">No transfers in this session.</td></tr>')+'</tbody></table></div></div>'+
 '<div class="card"><div class="notice">Browser uploads continue while this CinemaOS tab stays open. CinemaOS Agent will later make large DCP transfers independent of the browser, including after closing the web app.</div></div>'
 },
@@ -464,6 +464,45 @@ nav.forEach(btn=>btn.addEventListener("click",()=>openPage(btn.dataset.page)));
 document.querySelector("#quickMovie").onclick=()=>movieDialog.showModal();
 
 document.addEventListener("click",async e=>{
+const rt=e.target.closest("[data-resume-transfer]");
+if(rt){
+  const task=state.transfers.find(t=>t.id===rt.dataset.resumeTransfer);
+  if(task)resumeTransfer(task);
+  return;
+}
+const hc=e.target.closest("[data-hide-complete]");
+if(hc){
+  const removable=state.transfers.filter(t=>["PAUSED","READY","FAILED","HANDED_TO_BROWSER"].includes(t.status));
+  for(const task of removable){
+    if(task.status==="PAUSED"&&task.upload?.key&&task.upload?.uploadId){
+      try{
+        await api.send("/api/storage/multipart/abort","POST",{
+          key:task.upload.key,
+          uploadId:task.upload.uploadId
+        });
+      }catch{}
+    }
+  }
+  state.transfers=state.transfers.filter(t=>!["PAUSED","READY","FAILED","HANDED_TO_BROWSER"].includes(t.status));
+  persistTransfers();
+  renderTransferTray();
+  if(document.querySelector(".nav-item.active")?.dataset.page==="delivery")pages.delivery();
+  return;
+}
+const ct=e.target.closest("[data-cancel-transfer]");
+if(ct){
+  const task=state.transfers.find(t=>t.id===ct.dataset.cancelTransfer);
+  if(task){
+    if(task.upload?.key&&task.upload?.uploadId){
+      try{await api.send("/api/storage/multipart/abort","POST",{key:task.upload.key,uploadId:task.upload.uploadId})}catch{}
+    }
+    state.transfers=state.transfers.filter(t=>t.id!==task.id);
+    persistTransfers();
+    renderTransferTray();
+    if(document.querySelector(".nav-item.active")?.dataset.page==="delivery")pages.delivery();
+  }
+  return;
+}
 const go=e.target.closest("[data-go]");if(go)openPage(go.dataset.go);
 const del=e.target.closest("[data-delete-movie]");if(del&&confirm("Delete this movie and its versions?")){await api.send("/api/movies/"+encodeURIComponent(del.dataset.deleteMovie),"DELETE");state.movies=await api.get("/api/movies");renderMovies()}
 const av=e.target.closest("[data-add-version]");if(av)openVersionModal(av.dataset.addVersion);
