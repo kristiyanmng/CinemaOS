@@ -197,7 +197,7 @@ contentLibrary(){
 content.innerHTML=
 '<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Content Library</h2><p class="muted">DCP trailers, advertisements, features and preshow packages.</p></div><div style="display:flex;gap:8px"><button class="ghost" id="newContentAsset">+ Metadata only</button><button class="primary" id="uploadContentAsset">Import DCP</button></div></div><div class="notice">R2: '+(state.storageStatus?.configured?"CONNECTED":"NOT CONFIGURED")+' • CinemaOS Agent can ingest independently of the browser.</div></div>'+
 '<div class="page-grid">'+
-(state.contentAssets.map(a=>'<article class="movie-card"><div class="card-head"><h3>'+a.title+'</h3><span class="pill '+(a.asset_type==="TRAILER"?"playing":a.asset_type==="AD"?"warn":"")+'">'+a.asset_type+'</span></div><p>'+(a.runtime_seconds||a.duration_seconds||0)+' sec • '+(a.format||"DCP")+'</p><div class="meta"><span>'+(a.language||"No language")+'</span><span>'+a.status+'</span><span>'+(a.storage_ref?"R2":"METADATA")+'</span>'+(a.has_cpl?'<span>CPL</span>':'')+(a.encrypted?'<span>ENCRYPTED</span>':'<span>UNENCRYPTED</span>')+'</div><div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">'+(a.storage_ref?'<button class="ghost" data-download-content="'+a.id+'">Download</button>':'')+'<button class="ghost" data-passport-content="'+a.id+'">DCP Passport</button><button class="ghost" data-edit-content="'+a.id+'">Edit</button><button class="danger" data-delete-content="'+a.id+'">Delete</button></div></article>').join("")||'<div class="empty">No content yet.</div>')+
+(state.contentAssets.map(a=>'<article class="movie-card"><div class="card-head"><h3>'+a.title+'</h3><span class="pill '+(a.asset_type==="TRAILER"?"playing":a.asset_type==="AD"?"warn":"")+'">'+a.asset_type+'</span></div><p>'+(a.runtime_seconds||a.duration_seconds||0)+' sec • '+(a.format||"DCP")+'</p><div class="meta"><span>'+(a.language||"No language")+'</span><span>'+a.status+'</span><span>'+(a.storage_ref?"R2":"METADATA")+'</span>'+(a.has_cpl?'<span>CPL</span>':'')+(a.encrypted?'<span>ENCRYPTED</span>':'<span>UNENCRYPTED</span>')+'</div><div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">'+(a.storage_ref?'<button class="ghost" data-download-content="'+a.id+'">Download</button>':'')+'<button class="ghost" data-passport-content="'+a.id+'">DCP Passport</button>'+(a.storage_ref&&state.agents.some(x=>x.status==="ONLINE")?'<button class="primary" data-send-agent="'+a.id+'">Send to cinema storage</button>':'')<button class="ghost" data-edit-content="'+a.id+'">Edit</button><button class="danger" data-delete-content="'+a.id+'">Delete</button></div></article>').join("")||'<div class="empty">No content yet.</div>')+
 '</div>';
 document.querySelector("#newContentAsset").onclick=()=>openContentAssetModal();
 document.querySelector("#uploadContentAsset").onclick=()=>openUploadContentModal()
@@ -615,6 +615,18 @@ if(ct){
     persistTransfers();
     renderTransferTray();
     if(document.querySelector(".nav-item.active")?.dataset.page==="delivery")pages.delivery();
+  }
+  return;
+}
+const sa=e.target.closest("[data-send-agent]");
+if(sa){
+  const asset=state.contentAssets.find(x=>x.id===sa.dataset.sendAgent);
+  const agent=state.agents.find(x=>x.status==="ONLINE");
+  if(asset&&agent){
+    try{
+      await api.send("/api/agent-jobs","POST",{agentId:agent.id,jobType:"DOWNLOAD_CONTENT",payload:{storageRef:asset.storage_ref,fileName:(asset.title||"content")+".zip"}});
+      alert("Sent to CinemaOS Agent. The download will continue independently of the browser.");
+    }catch(err){alert(err.message)}
   }
   return;
 }
