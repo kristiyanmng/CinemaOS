@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import AdmZip from "adm-zip";
 
-const VERSION="0.3.0";
+const VERSION="0.4.0";
 const DATA_DIR=path.join(process.env.PROGRAMDATA||process.cwd(),"CinemaOSAgent");
 const CONFIG_PATH=path.join(DATA_DIR,"config.json");
 const QUEUE_PATH=path.join(DATA_DIR,"queue.json");
@@ -86,7 +86,7 @@ async function heartbeat(){
     body:JSON.stringify({
       machineName:os.hostname(),
       version:VERSION,
-      capabilities:["persistent_queue","heartbeat","job_polling"]
+      capabilities:["persistent_queue","heartbeat","job_polling","dcp_folder_ingest","local_storage_registry","hardware_adapter_foundation"]
     })
   });
 }
@@ -110,6 +110,54 @@ async function pollJobs(){
 function xmlText(xml,tag){
   const m=xml.match(new RegExp("<(?:\\w+:)?"+tag+"[^>]*>([\\s\\S]*?)<\\/(?:\\w+:)?"+tag+">","i"));
   return m?m[1].replace(/<[^>]+>/g,"").trim():"";
+}
+
+function walkDirectory(root){
+  const files=[];
+  const stack=[root];
+  while(stack.length){
+    const current=stack.pop();
+    let entries=[];
+    try{entries=fs.readdirSync(current,{withFileTypes:true})}catch{continue}
+    for(const e of entries){
+      const full=path.join(current,e.name);
+      if(e.isDirectory())stack.push(full);
+      else if(e.isFile())files.push(full);
+    }
+  }
+  return files;
+}
+
+function analyzeDcpFolder(folderPath){
+  const result={
+    hasAssetMap:false,hasPkl:false,hasCpl:false,packageFiles:0,bytesTotal:0,
+    cplId:"",annotationText:"",editRate:"",durationFrames:0,runtimeSeconds:0,encrypted:false
+  };
+  const files=walkDirectory(folderPath);
+  result.packageFiles=files.length;
+  const cpls=[];
+  for(const file of files){
+    const base=path.basename(file).toUpperCase();
+    try{result.bytesTotal+=fs.statSync(file).size}catch{}
+    if(base==="ASSETMAP"||base==="ASSETMAP.XML")result.hasAssetMap=true;
+    if(base.startsWith("PKL_")&&base.endsWith(".XML"))result.hasPkl=true;
+    if(base.startsWith("CPL_")&&base.endsWith(".XML")){
+      result.hasCpl=true;
+      try{cpls.push(fs.readFileSync(file,"utf8"))}catch{}
+    }
+  }
+  const cpl=cpls[0]||"";
+  if(cpl){
+    result.cplId=xmlText(cpl,"Id");
+    result.annotationText=xmlText(cpl,"ContentTitleText")||xmlText(cpl,"AnnotationText");
+    result.editRate=xmlText(cpl,"EditRate");
+    const duration=Number(xmlText(cpl,"Duration")||xmlText(cpl,"IntrinsicDuration")||0);
+    result.durationFrames=duration;
+    const rate=Number((result.editRate.match(/\d+/)||["0"])[0]);
+    result.runtimeSeconds=rate>0?Math.round(duration/rate):0;
+    result.encrypted=/<(?:\w+:)?KeyId[>\s]/i.test(cpl);
+  }
+  return result;
 }
 
 function analyzeDcpPackage(filePath){
@@ -279,6 +327,52 @@ async function uploadFileToCloud(job){
   }catch{}
 }
 
+async function reportLocalFolder(folderPath){
+  const analysis=analyzeDcpFolder(folderPath);
+  if(!(analysis.hasAssetMap||analysis.hasPkl||analysis.hasCpl)) return false;
+  const localKey="inbox-folder:"+path.basename(folderPath);
+  const title=analysis.annotationText||path.basename(folderPath);
+  await cloudJson("/api/agent/local-assets/report","POST",{
+    localKey,
+    title,
+    packageType:"DCP_FOLDER",
+    localPathLabel:path.basename(folderPath),
+    bytesTotal:analysis.bytesTotal,
+    filesTotal:analysis.packageFiles,
+    cplId:analysis.cplId,
+    annotationText:analysis.annotationText,
+    editRate:analysis.editRate,
+    runtimeSeconds:analysis.runtimeSeconds,
+    encrypted:analysis.encrypted,
+    hasAssetMap:analysis.hasAssetMap,
+    hasPkl:analysis.hasPkl,
+    hasCpl:analysis.hasCpl,
+    status:"READY"
+  });
+  return true;
+}
+
+async function discoverDcpFolders(){
+  let entries=[];
+  try{entries=fs.readdirSync(INBOX_DIR,{withFileTypes:true})}catch{return}
+  for(const e of entries){
+    if(!e.isDirectory())continue;
+    const full=path.join(INBOX_DIR,e.name);
+    const key="folder:"+full;
+    const existing=queue.find(j=>j.id===key);
+    if(existing&&existing.status==="REGISTERED")continue;
+    try{
+      const ok=await reportLocalFolder(full);
+      if(ok){
+        if(existing){existing.status="REGISTERED";existing.progress=100}
+        else queue.push({id:key,source:"FOLDER",filePath:full,status:"REGISTERED",progress:100,message:"DCP folder registered in CinemaOS"});
+        saveJson(QUEUE_PATH,queue);
+        console.log("Registered DCP folder:",e.name);
+      }
+    }catch(err){console.error("Folder analysis failed:",e.name,err.message)}
+  }
+}
+
 function discoverInbox(){
   const names=fs.readdirSync(INBOX_DIR);
   for(const name of names){
@@ -404,6 +498,7 @@ async function tick(){
     const remoteJobs=await api("/api/agent/jobs");
     mergeJobs(remoteJobs);
     await processRemoteJobs(remoteJobs);
+    await discoverDcpFolders();
     discoverInbox();
     await processLocalQueue();
     const active=queue.filter(j=>["QUEUED","UPLOADING","PAUSED"].includes(j.status)).length;
