@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import AdmZip from "adm-zip";
 
-const VERSION="0.2.1";
+const VERSION="0.2.2";
 const DATA_DIR=path.join(process.env.PROGRAMDATA||process.cwd(),"CinemaOSAgent");
 const CONFIG_PATH=path.join(DATA_DIR,"config.json");
 const QUEUE_PATH=path.join(DATA_DIR,"queue.json");
@@ -64,7 +65,7 @@ async function enrollIfNeeded(){
       name:config.name,
       machineName:os.hostname(),
       version:VERSION,
-      capabilities:["persistent_queue","heartbeat","job_polling"]
+      capabilities:["persistent_queue","heartbeat","job_polling","dcp_analysis","live_transfer_reporting"]
     })
   });
   config.agentId=data.agentId;
@@ -104,6 +105,65 @@ async function pollJobs(){
   mergeJobs(jobs);
 }
 
+function xmlText(xml,tag){
+  const m=xml.match(new RegExp("<(?:\\w+:)?"+tag+"[^>]*>([\\s\\S]*?)<\\/(?:\\w+:)?"+tag+">","i"));
+  return m?m[1].replace(/<[^>]+>/g,"").trim():"";
+}
+
+function analyzeDcpPackage(filePath){
+  const result={
+    hasAssetMap:false,hasPkl:false,hasCpl:false,packageFiles:0,
+    cplId:"",annotationText:"",editRate:"",durationFrames:0,runtimeSeconds:0,encrypted:false
+  };
+  if(path.extname(filePath).toLowerCase()!==".zip") return result;
+  try{
+    const zip=new AdmZip(filePath);
+    const entries=zip.getEntries();
+    result.packageFiles=entries.length;
+    const xmls=[];
+    for(const e of entries){
+      const base=path.basename(e.entryName).toUpperCase();
+      if(base==="ASSETMAP"||base==="ASSETMAP.XML") result.hasAssetMap=true;
+      if(base.startsWith("PKL_")&&base.endsWith(".XML")) result.hasPkl=true;
+      if(base.startsWith("CPL_")&&base.endsWith(".XML")){
+        result.hasCpl=true;
+        try{xmls.push(e.getData().toString("utf8"))}catch{}
+      }
+    }
+    const cpl=xmls[0]||"";
+    if(cpl){
+      result.cplId=xmlText(cpl,"Id");
+      result.annotationText=xmlText(cpl,"ContentTitleText")||xmlText(cpl,"AnnotationText");
+      result.editRate=xmlText(cpl,"EditRate");
+      const duration=Number(xmlText(cpl,"Duration")||xmlText(cpl,"IntrinsicDuration")||0);
+      result.durationFrames=duration;
+      const rate=Number((result.editRate.match(/\d+/)||["0"])[0]);
+      result.runtimeSeconds=rate>0?Math.round(duration/rate):0;
+      result.encrypted=/<(?:\w+:)?KeyId[>\s]/i.test(cpl);
+    }
+  }catch(err){
+    result.analysisError=err.message;
+  }
+  return result;
+}
+
+async function reportTransfer(job,stat,startTime){
+  if(!config.agentToken)return;
+  const bytesTotal=Number(stat?.size||0);
+  const completedParts=(job.multipart?.parts||[]).length;
+  const chunkSize=job.multipart?.chunkSize||20*1024*1024;
+  const bytesDone=Math.min(bytesTotal,completedParts*chunkSize);
+  const elapsed=Math.max(1,(Date.now()-startTime)/1000);
+  const speedBps=Math.round(bytesDone/elapsed);
+  try{
+    await cloudJson("/api/agent/transfers/report","POST",{
+      id:job.id,fileName:path.basename(job.filePath),direction:"UPLOAD",
+      status:job.status||"QUEUED",progress:Number(job.progress||0),
+      bytesDone,bytesTotal,speedBps,message:job.message||""
+    });
+  }catch{}
+}
+
 async function cloudJson(pathname,method,body){
   return await api(pathname,{method,body:body?JSON.stringify(body):undefined});
 }
@@ -113,6 +173,16 @@ async function uploadFileToCloud(job){
   const stat=fs.statSync(filePath);
   const fileName=path.basename(filePath);
   const meta=job.meta||{};
+  const startedAt=job.startedAt||Date.now();
+  job.startedAt=startedAt;
+  if(!job.analysis){
+    job.analysis=analyzeDcpPackage(filePath);
+    if(job.analysis.annotationText) meta.title=job.analysis.annotationText;
+    if(job.analysis.runtimeSeconds) meta.durationSeconds=job.analysis.runtimeSeconds;
+    if(/_TLR|TRAILER/i.test(fileName)) meta.assetType="TRAILER";
+    job.meta=meta;
+    saveJson(QUEUE_PATH,queue);
+  }
 
   if(!job.multipart){
     const init=await cloudJson("/api/storage/multipart/init","POST",{
@@ -124,6 +194,7 @@ async function uploadFileToCloud(job){
     job.multipart={key:init.key,uploadId:init.uploadId,assetId:init.assetId,parts:[],chunkSize:20*1024*1024};
     job.status="UPLOADING";
     saveJson(QUEUE_PATH,queue);
+    await reportTransfer(job,stat,startedAt);
   }
 
   const chunkSize=job.multipart.chunkSize||20*1024*1024;
@@ -165,6 +236,7 @@ async function uploadFileToCloud(job){
       job.message="Uploading "+fileName;
       saveJson(QUEUE_PATH,queue);
       console.log("Progress:",job.progress+"%","("+completed.size+"/"+totalParts+" parts)");
+      await reportTransfer(job,stat,startedAt);
     }
   }finally{
     fs.closeSync(fd);
@@ -177,7 +249,7 @@ async function uploadFileToCloud(job){
     parts:job.multipart.parts
   });
 
-  await cloudJson("/api/content-assets","POST",{
+  const createdAsset=await cloudJson("/api/content-assets","POST",{
     assetType:meta.assetType||"OTHER",
     title:meta.title||path.parse(fileName).name,
     durationSeconds:Number(meta.durationSeconds||0),
@@ -186,10 +258,15 @@ async function uploadFileToCloud(job){
     storageRef:job.multipart.key
   });
 
+  if(createdAsset?.id){
+    await cloudJson("/api/content-assets/"+encodeURIComponent(createdAsset.id)+"/metadata","POST",job.analysis||{});
+  }
+
   job.status="READY";
   job.progress=100;
   job.message="Stored in CinemaOS";
   saveJson(QUEUE_PATH,queue);
+  await reportTransfer(job,stat,startedAt);
 
   const target=path.join(DONE_DIR,fileName);
   try{
@@ -237,6 +314,7 @@ async function processLocalQueue(){
     job.status="PAUSED";
     job.message=err.message;
     saveJson(QUEUE_PATH,queue);
+    try{const stat=fs.existsSync(job.filePath)?fs.statSync(job.filePath):null;await reportTransfer(job,stat,job.startedAt||Date.now())}catch{}
     console.error("Transfer paused:",err.message);
   }finally{
     processingLocal=false;
