@@ -1,4 +1,4 @@
-const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],storageStatus:null,downloads:[
+const state={cinema:null,movies:[],halls:[],screenings:[],playlists:[],contentAssets:[],certificates:[],kdmRequests:[],storageStatus:null,downloads:[
 {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
 {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
 
@@ -38,6 +38,8 @@ async function refresh(){
   state.playlists=await api.get("/api/playlists");
   state.contentAssets=await api.get("/api/content-assets");
   state.storageStatus=await api.get("/api/storage/status");
+  state.certificates=await api.get("/api/certificates");
+  state.kdmRequests=await api.get("/api/kdm-requests");
   subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
 
@@ -99,6 +101,20 @@ halls(){
 content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Halls</h2><p class="muted">Cinema halls stored in D1.</p></div><button class="primary" id="newHall">+ Add hall</button></div></div><div class="page-grid">'+state.halls.map(h=>'<article class="movie-card"><div class="card-head"><h3>'+h.name+'</h3>'+statusPill(h.status)+'</div><p>'+h.seats+' seats</p><div class="meta"><span>D1</span><span>ID '+h.id+'</span></div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-edit-hall="'+h.id+'">Edit</button><button class="danger" data-delete-hall="'+h.id+'">Delete</button></div></article>').join("")+'</div>';
 document.querySelector("#newHall").onclick=()=>openHallModal()},
 automation(){content.innerHTML='<div class="grid two"><article class="card"><div class="card-head"><h2>Show Automation</h2><span class="pill warn">DEMO</span></div><p class="subtle">Future CinemaOS Agent commands for lights, curtains, audio and projector control.</p></article><article class="card"><h2>Hardware Adapter Layer</h2><p class="subtle">Real integration will use documented and authorized vendor interfaces.</p></article></div>'},
+security(){
+content.innerHTML=
+'<div class="grid two">'+
+'<article class="card"><div class="card-head"><div><h2>Device Certificates</h2><p class="muted">Public IMS / media block certificates stored once per hall.</p></div><button class="primary" id="newCertificate">+ Add certificate</button></div>'+
+(state.certificates.map(c=>'<div class="queue-row"><div><b>'+c.hall_name+' — '+c.device_name+'</b><span>'+(c.manufacturer||"")+' '+(c.model||"")+' • '+(c.serial_number||"no serial")+'</span><span>'+(c.fingerprint_sha256||"no fingerprint")+'</span></div><button class="danger" data-delete-cert="'+c.id+'">Delete</button></div>').join("")||'<div class="empty">No device certificates yet.</div>')+
+'</article>'+
+'<article class="card"><div class="card-head"><div><h2>KDM Readiness</h2><p class="muted">CinemaOS resolves the target certificate automatically for the selected hall.</p></div><button class="primary" id="newKdmRequest">+ New request</button></div>'+
+(state.kdmRequests.map(k=>'<div class="queue-row"><div><b>'+k.movie_title+' — '+k.version_name+'</b><span>'+k.hall_name+' • '+k.device_name+'</span><span>'+k.valid_from+' → '+k.valid_until+'</span></div>'+statusPill(k.status)+'</div>').join("")||'<div class="empty">No KDM requests yet.</div>')+
+'</article></div>'+
+'<div class="card"><div class="notice">CinemaOS stores only public certificate data here. Private keys remain on the playback device. KDM creation/delivery requires authorized key material and legitimate distributor/content-owner workflow.</div></div>';
+document.querySelector("#newCertificate").onclick=()=>openCertificateModal();
+document.querySelector("#newKdmRequest").onclick=()=>openKdmRequestModal()
+},
+
 ai(){content.innerHTML='<div class="card"><div class="card-head"><h2>AI Assistant</h2><span class="pill ai">BETA</span></div><p class="subtle">Next: schedule optimization using real screening and hall data.</p></div>'},
 reports(){content.innerHTML='<div class="grid three"><article class="card"><span class="muted">Screenings</span><div class="kpi">'+state.screenings.length+'</div></article><article class="card"><span class="muted">Movies</span><div class="kpi">'+state.movies.length+'</div></article><article class="card"><span class="muted">Halls</span><div class="kpi">'+state.halls.length+'</div></article></div>'},
 settings(){content.innerHTML='<div class="grid two"><article class="card"><h2>Cinema profile</h2><div class="field"><label>Cinema ID<input value="'+(state.cinema?.id||"")+'" readonly></label></div><div class="field"><label>Name<input value="'+(state.cinema?.name||"")+'" readonly></label></div></article><article class="card"><h2>Database</h2><p class="subtle">Cloudflare D1 connected.</p></article></div>'}
@@ -230,6 +246,23 @@ state.contentAssets=await api.get("/api/content-assets");pages.contentLibrary()
 });
 }
 
+function openCertificateModal(){
+if(!state.halls.length){alert("Add a hall first.");return}
+modal("Add device certificate",'<div class="form-grid"><label>Hall<select name="hallId">'+state.halls.map(h=>'<option value="'+h.id+'">'+h.name+'</option>').join("")+'</select></label><label>Device name<input name="deviceName" required placeholder="IMS / Media Block"></label><label>Manufacturer<input name="manufacturer" placeholder="Barco / Dolby / GDC / Qube"></label><label>Model<input name="model"></label><label>Serial number<input name="serialNumber"></label><label>SHA-256 fingerprint<input name="fingerprintSha256"></label><label>Valid from<input name="validFrom" type="date"></label><label>Valid until<input name="validUntil" type="date"></label><label style="grid-column:1/-1">Public certificate (PEM)<textarea name="certificatePem" rows="8" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label></div>',async fd=>{
+await api.send("/api/certificates","POST",{hallId:fd.get("hallId"),deviceName:fd.get("deviceName"),manufacturer:fd.get("manufacturer"),model:fd.get("model"),serialNumber:fd.get("serialNumber"),fingerprintSha256:fd.get("fingerprintSha256"),validFrom:fd.get("validFrom")||null,validUntil:fd.get("validUntil")||null,certificatePem:fd.get("certificatePem")});
+state.certificates=await api.get("/api/certificates");pages.security()
+});
+}
+
+function openKdmRequestModal(){
+const vs=versions();
+if(!vs.length||!state.halls.length){alert("You need a movie version and a hall.");return}
+modal("New KDM request",'<div class="form-grid"><label>Movie / version<select name="versionId">'+vs.map(v=>'<option value="'+v.id+'">'+v.movieTitle+' — '+v.name+'</option>').join("")+'</select></label><label>Hall<select name="hallId">'+state.halls.map(h=>'<option value="'+h.id+'">'+h.name+'</option>').join("")+'</select></label><label>Valid from<input name="validFrom" type="datetime-local" required></label><label>Valid until<input name="validUntil" type="datetime-local" required></label><label style="grid-column:1/-1">Notes<textarea name="notes" rows="3"></textarea></label></div>',async fd=>{
+await api.send("/api/kdm-requests","POST",{versionId:fd.get("versionId"),hallId:fd.get("hallId"),validFrom:new Date(fd.get("validFrom")).toISOString(),validUntil:new Date(fd.get("validUntil")).toISOString(),notes:fd.get("notes")});
+state.kdmRequests=await api.get("/api/kdm-requests");pages.security()
+});
+}
+
 function openHallModal(hall){
 modal(hall?"Edit hall":"Add hall",'<div class="form-grid"><label>Name<input name="name" required value="'+(hall?.name||"")+'"></label><label>Seats<input name="seats" type="number" min="0" value="'+(hall?.seats||0)+'"></label><label>Status<select name="status"><option>IDLE</option><option>READY</option><option>PLAYING</option><option>OFFLINE</option></select></label></div>',async fd=>{
 if(hall)await api.send("/api/halls/"+hall.id,"PUT",{name:fd.get("name"),seats:Number(fd.get("seats")),status:fd.get("status")});
@@ -298,6 +331,7 @@ const apiBtn=e.target.closest("[data-add-playlist-item]");if(apiBtn)openPlaylist
 const di=e.target.closest("[data-delete-item]");if(di&&confirm("Delete this playlist item?")){await api.send("/api/playlist-items/"+encodeURIComponent(di.dataset.deleteItem),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
 const dp=e.target.closest("[data-delete-playlist]");if(dp&&confirm("Delete this playlist?")){await api.send("/api/playlists/"+encodeURIComponent(dp.dataset.deletePlaylist),"DELETE");state.playlists=await api.get("/api/playlists");pages.playlists()}
 const pc=e.target.closest("[data-preview-content]");if(pc){const a=state.contentAssets.find(x=>x.id===pc.dataset.previewContent);if(a?.storage_ref)window.open("/api/storage/object/"+encodeURIComponent(a.storage_ref),"_blank")}
+const dcx=e.target.closest("[data-delete-cert]");if(dcx&&confirm("Delete this public device certificate?")){try{await api.send("/api/certificates/"+encodeURIComponent(dcx.dataset.deleteCert),"DELETE");state.certificates=await api.get("/api/certificates");pages.security()}catch(err){alert(err.message)}}
 const ec=e.target.closest("[data-edit-content]");if(ec)openContentAssetModal(state.contentAssets.find(a=>a.id===ec.dataset.editContent));
 const dc=e.target.closest("[data-delete-content]");if(dc&&confirm("Delete this content item?")){await api.send("/api/content-assets/"+encodeURIComponent(dc.dataset.deleteContent),"DELETE");state.contentAssets=await api.get("/api/content-assets");pages.contentLibrary()}
 });
