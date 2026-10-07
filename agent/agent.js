@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const VERSION="0.2.0";
+const VERSION="0.2.1";
 const DATA_DIR=path.join(process.env.PROGRAMDATA||process.cwd(),"CinemaOSAgent");
 const CONFIG_PATH=path.join(DATA_DIR,"config.json");
 const QUEUE_PATH=path.join(DATA_DIR,"queue.json");
@@ -37,11 +37,12 @@ let config=loadJson(CONFIG_PATH,{
   agentToken:""
 });
 let queue=loadJson(QUEUE_PATH,[]);
+let processingLocal=false;
 
 async function api(pathname,options={}){
   const headers={"content-type":"application/json",...(options.headers||{})};
   if(config.agentToken) headers.authorization="Bearer "+config.agentToken;
-  const r=await fetch(config.apiBase+pathname,{...options,headers});
+  const r=await fetch(config.apiBase+pathname,{...options,headers,signal:options.signal||AbortSignal.timeout(30000)});
   const text=await r.text();
   let data={};
   try{data=text?JSON.parse(text):{}}catch{}
@@ -146,10 +147,12 @@ async function uploadFileToCloud(job){
         partNumber:String(partNumber)
       });
 
+      console.log("Uploading",fileName,"part",partNumber+"/"+totalParts,"...");
       const r=await fetch(config.apiBase+"/api/storage/multipart/part?"+qs.toString(),{
         method:"PUT",
         headers:{authorization:"Bearer "+config.agentToken},
-        body:buffer
+        body:buffer,
+        signal:AbortSignal.timeout(120000)
       });
       const data=await r.json().catch(()=>({}));
       if(!r.ok)throw new Error(data.detail?data.error+": "+data.detail:data.error||"HTTP "+r.status);
@@ -161,6 +164,7 @@ async function uploadFileToCloud(job){
       job.status="UPLOADING";
       job.message="Uploading "+fileName;
       saveJson(QUEUE_PATH,queue);
+      console.log("Progress:",job.progress+"%","("+completed.size+"/"+totalParts+" parts)");
     }
   }finally{
     fs.closeSync(fd);
@@ -221,9 +225,12 @@ function discoverInbox(){
 }
 
 async function processLocalQueue(){
+  if(processingLocal)return;
   const job=queue.find(j=>j.source==="INBOX" && ["QUEUED","UPLOADING","PAUSED"].includes(j.status));
   if(!job)return;
+  processingLocal=true;
   try{
+    console.log("Starting transfer:",path.basename(job.filePath));
     await uploadFileToCloud(job);
     console.log("Transfer complete:",path.basename(job.filePath));
   }catch(err){
@@ -231,6 +238,8 @@ async function processLocalQueue(){
     job.message=err.message;
     saveJson(QUEUE_PATH,queue);
     console.error("Transfer paused:",err.message);
+  }finally{
+    processingLocal=false;
   }
 }
 
