@@ -1,0 +1,12 @@
+{
+  "name": "cinemaos-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node agent.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
