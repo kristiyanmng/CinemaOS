@@ -1,262 +1,117 @@
-const state = {
-  cinema: null,
-  movies: [],
-  halls: [],
-  screenings: [],
-  downloads: [
-    {name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
-    {name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}
-  ]
+const state={cinema:null,movies:[],halls:[],screenings:[],downloads:[
+{name:"Avengers: Doomsday • BG Dub",progress:68,speed:"126 MB/s",status:"DOWNLOADING"},
+{name:"Disney Trailer Pack",progress:100,speed:"Ready",status:"READY"}]};
+
+const content=document.querySelector("#content");
+const title=document.querySelector("#pageTitle");
+const subtitle=document.querySelector("#pageSubtitle");
+const nav=[...document.querySelectorAll(".nav-item")];
+const movieDialog=document.querySelector("#movieDialog");
+const movieForm=document.querySelector("#movieForm");
+
+const api={
+  async get(path){const r=await fetch(path);const d=await r.json();if(!r.ok)throw new Error(d.error||"Request failed");return d},
+  async send(path,method,body){const r=await fetch(path,{method,headers:{"content-type":"application/json"},body:body?JSON.stringify(body):undefined});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||"Request failed");return d}
 };
 
-const content = document.querySelector("#content");
-const title = document.querySelector("#pageTitle");
-const subtitle = document.querySelector("#pageSubtitle");
-const nav = [...document.querySelectorAll(".nav-item")];
-const movieDialog = document.querySelector("#movieDialog");
-const movieForm = document.querySelector("#movieForm");
+const statusPill=s=>'<span class="pill '+((s==="READY"||s==="ONLINE")?"good":s==="PLAYING"?"playing":s==="WAITING_CONTENT"?"warn":"")+'">'+s+'</span>';
+const versions=()=>state.movies.flatMap(m=>(m.versions||[]).map(v=>({...v,movieId:m.id,movieTitle:m.title})));
+const fmtDate=x=>new Date(x).toLocaleString("bg-BG");
 
-const api = {
-  async get(path){
-    const r = await fetch(path);
-    if(!r.ok) throw new Error((await r.json()).error || "Request failed");
-    return r.json();
-  },
-  async send(path, method, body){
-    const r = await fetch(path,{
-      method,
-      headers:{"content-type":"application/json"},
-      body: body ? JSON.stringify(body) : undefined
-    });
-    const data = await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data.error || "Request failed");
-    return data;
-  }
-};
-
-function statusPill(status){
-  const c = status==="READY"||status==="ONLINE" ? "good" : status==="PLAYING" ? "playing" : status==="WAITING_CONTENT" ? "warn" : "";
-  return `<span class="pill ${c}">${status}</span>`;
+async function refresh(){
+  const d=await api.get("/api/bootstrap");
+  Object.assign(state,{cinema:d.cinema,halls:d.halls||[],movies:d.movies||[],screenings:d.screenings||[]});
+  subtitle.textContent=(state.cinema?.name||"CinemaOS")+" • "+(state.cinema?.city||"");
 }
 
-function flatVersions(){
-  return state.movies.flatMap(m => (m.versions || []).map(v => ({...v,movieId:m.id,movieTitle:m.title})));
+function modal(titleText,html,onSubmit){
+  const d=document.createElement("dialog");d.className="dialog";
+  d.innerHTML='<form method="dialog"><div class="dialog-head"><div><h2>'+titleText+'</h2></div><button value="cancel" class="icon-btn">×</button></div>'+html+'<div class="dialog-actions"><button value="cancel" class="ghost">Cancel</button><button type="submit" value="default" class="primary">Save</button></div></form>';
+  document.body.appendChild(d);
+  d.addEventListener("close",()=>d.remove());
+  d.querySelector("form").addEventListener("submit",async e=>{e.preventDefault();try{await onSubmit(new FormData(e.currentTarget));d.close()}catch(err){alert(err.message)}});
+  d.showModal();
 }
 
-async function loadBackend(){
-  try{
-    const data = await api.get("/api/bootstrap");
-    state.cinema = data.cinema;
-    state.halls = data.halls || [];
-    state.movies = data.movies || [];
-    state.screenings = data.screenings || [];
-    subtitle.textContent = `${state.cinema?.name || "CinemaOS"} • ${state.cinema?.city || ""}`;
-  }catch(err){
-    console.error(err);
-  }
-}
-
-const pages = {
-  dashboard(){
-    content.innerHTML = `
-      <div class="grid stats">
-        <article class="card stat"><span>Halls</span><strong>${state.halls.length}</strong><small>D1 database</small></article>
-        <article class="card stat"><span>Movies</span><strong>${state.movies.length}</strong><small>Central library</small></article>
-        <article class="card stat"><span>Storage</span><strong>4.8 TB</strong><small>of 12 TB usable</small></article>
-        <article class="card stat"><span>Downloads</span><strong>${state.downloads.filter(d=>d.progress<100).length}</strong><small>Background queue</small></article>
-      </div>
-
-      <div class="grid two">
-        <article class="card">
-          <div class="card-head"><h2>Hall status</h2><span class="pill good">DATABASE LIVE</span></div>
-          ${state.halls.map(h=>`<div class="hall-row"><div><b>${h.name}</b><span>${h.seats} seats</span></div>${statusPill(h.status)}</div>`).join("") || '<div class="empty">No halls yet.</div>'}
-        </article>
-
-        <article class="card">
-          <div class="card-head"><h2>Content delivery</h2><span>Central Storage</span></div>
-          ${state.downloads.map(d=>`<div class="download"><div class="download-top"><b>${d.name}</b><span>${d.progress}%</span></div><div class="progress"><i style="width:${d.progress}%"></i></div><small>${d.speed}</small></div>`).join("")}
-        </article>
-      </div>
-
-      <div class="grid two">
-        <article class="card">
-          <div class="card-head"><h2>Schedule</h2><button class="link" data-go="schedule">Open schedule</button></div>
-          <div class="timeline">${state.screenings.slice(0,5).map(s=>`<div><time>${new Date(s.starts_at).toLocaleTimeString("bg-BG",{hour:"2-digit",minute:"2-digit"})}</time><span>${s.hall_name}</span><b>${s.movie_title}</b></div>`).join("") || '<div class="empty">No screenings yet.</div>'}</div>
-        </article>
-
-        <article class="card">
-          <div class="card-head"><h2>Backend</h2><span class="pill good">D1 CONNECTED</span></div>
-          <p class="subtle">Movies, halls and screenings now use the shared Cloudflare D1 database instead of browser localStorage.</p>
-        </article>
-      </div>`;
-  },
-
-  movies(){
-    content.innerHTML = `
-      <div class="card" style="margin-bottom:18px">
-        <div class="card-head"><div><h2>Movie Library</h2><p class="muted">Shared D1 content metadata.</p></div><button class="primary" id="newMovie">+ Add movie</button></div>
-      </div>
-      <div class="page-grid" id="moviesGrid"></div>`;
-    renderMovies();
-    document.querySelector("#newMovie").onclick=()=>movieDialog.showModal();
-  },
-
-  delivery(){
-    content.innerHTML = `
-      <div class="card">
-        <div class="card-head"><h2>Content Delivery Queue</h2><span class="pill warn">DEMO</span></div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Content</th><th>Destination</th><th>Status</th><th>Progress</th></tr></thead>
-        <tbody>${state.downloads.map(d=>`<tr><td>${d.name}</td><td>Central Storage</td><td>${statusPill(d.status)}</td><td>${d.progress}%</td></tr>`).join("")}</tbody></table></div>
-      </div>`;
-  },
-
-  schedule(){
-    content.innerHTML = `
-      <div class="card">
-        <div class="card-head"><h2>Schedule</h2><button class="primary" id="demoScreening">+ Add test screening</button></div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Start</th><th>Hall</th><th>Movie</th><th>Version</th><th>Status</th></tr></thead>
-        <tbody>${state.screenings.map(s=>`<tr><td>${new Date(s.starts_at).toLocaleString("bg-BG")}</td><td>${s.hall_name}</td><td>${s.movie_title}</td><td>${s.version_name}</td><td>${statusPill(s.status)}</td></tr>`).join("") || '<tr><td colspan="5">No screenings yet.</td></tr>'}</tbody></table></div>
-      </div>`;
-
-    document.querySelector("#demoScreening").onclick=async()=>{
-      const version = flatVersions()[0];
-      const hall = state.halls[0];
-      if(!version || !hall){
-        alert("Add at least one movie first.");
-        return;
-      }
-      const d = new Date();
-      d.setMinutes(d.getMinutes()+30);
-      d.setSeconds(0,0);
-      try{
-        await api.send("/api/screenings","POST",{
-          hallId: hall.id,
-          versionId: version.id,
-          startsAt: d.toISOString()
-        });
-        state.screenings = await api.get("/api/screenings");
-        pages.schedule();
-      }catch(err){ alert(err.message); }
-    };
-  },
-
-  playlists(){
-    content.innerHTML = `
-      <div class="grid two">
-        <article class="card"><div class="card-head"><h2>Show Playlist</h2><span class="pill warn">NEXT</span></div>
-          <div class="queue-row"><span>1. Advertisement</span><span class="pill">AD</span></div>
-          <div class="queue-row"><span>2. Trailer</span><span class="pill">TRAILER</span></div>
-          <div class="queue-row"><span>3. Feature Presentation</span><span class="pill good">MOVIE</span></div>
-        </article>
-        <article class="card"><h2>Automation cues</h2><div class="meta"><span>PRE-SHOW 70%</span><span>TRAILERS 50%</span><span>MOVIE 0%</span><span>CREDITS 20%</span><span>END 100%</span></div></article>
-      </div>`;
-  },
-
-  halls(){
-    content.innerHTML = `<div class="page-grid">${state.halls.map(h=>`
-      <article class="movie-card">
-        <div class="card-head"><h3>${h.name}</h3>${statusPill(h.status)}</div>
-        <p>${h.seats} seats</p>
-        <div class="meta"><span>ID: ${h.id}</span><span>D1</span><span>Agent pending</span></div>
-      </article>`).join("")}</div>`;
-  },
-
-  automation(){
-    content.innerHTML = `
-      <div class="grid two">
-        <article class="card"><div class="card-head"><h2>Show Automation</h2><span class="pill warn">DEMO</span></div>
-          <p class="subtle">Future CinemaOS Agent commands for lights, curtains, audio and projector control.</p>
-        </article>
-        <article class="card"><h2>Hardware Adapter Layer</h2><p class="subtle">Real equipment integration will use documented and authorized interfaces.</p></article>
-      </div>`;
-  },
-
-  ai(){
-    content.innerHTML = `
-      <div class="card"><div class="card-head"><h2>AI Assistant</h2><span class="pill ai">BETA</span></div>
-      <p class="subtle">Next stage: schedule optimization using real D1 screening data.</p></div>`;
-  },
-
-  reports(){
-    content.innerHTML = `
-      <div class="grid three">
-        <article class="card"><span class="muted">Screenings</span><div class="kpi">${state.screenings.length}</div></article>
-        <article class="card"><span class="muted">Movies</span><div class="kpi">${state.movies.length}</div></article>
-        <article class="card"><span class="muted">Halls</span><div class="kpi">${state.halls.length}</div></article>
-      </div>`;
-  },
-
-  settings(){
-    content.innerHTML = `
-      <div class="grid two">
-        <article class="card"><h2>Cinema profile</h2>
-          <div class="field"><label>Cinema ID<input value="${state.cinema?.id || ""}" readonly /></label></div>
-          <div class="field"><label>Name<input value="${state.cinema?.name || ""}" readonly /></label></div>
-        </article>
-        <article class="card"><h2>Database</h2><p class="subtle">Cloudflare D1 is connected. Shared operational metadata is now available from every device that opens CinemaOS.</p></article>
-      </div>`;
-  }
+const pages={
+dashboard(){
+content.innerHTML=`
+<div class="grid stats">
+<article class="card stat"><span>Halls</span><strong>${state.halls.length}</strong><small>D1 database</small></article>
+<article class="card stat"><span>Movies</span><strong>${state.movies.length}</strong><small>Central library</small></article>
+<article class="card stat"><span>Screenings</span><strong>${state.screenings.length}</strong><small>Shared schedule</small></article>
+<article class="card stat"><span>Downloads</span><strong>${state.downloads.filter(d=>d.progress<100).length}</strong><small>Background queue</small></article>
+</div>
+<div class="grid two">
+<article class="card"><div class="card-head"><h2>Hall status</h2><span class="pill good">D1 LIVE</span></div>
+${state.halls.map(h=>'<div class="hall-row"><div><b>'+h.name+'</b><span>'+h.seats+' seats</span></div>'+statusPill(h.status)+'</div>').join("")||'<div class="empty">No halls.</div>'}</article>
+<article class="card"><div class="card-head"><h2>Today's / upcoming screenings</h2><button class="link" data-go="schedule">Open</button></div>
+<div class="timeline">${state.screenings.slice(0,5).map(s=>'<div><time>'+new Date(s.starts_at).toLocaleTimeString("bg-BG",{hour:"2-digit",minute:"2-digit"})+'</time><span>'+s.hall_name+'</span><b>'+s.movie_title+'</b></div>').join("")||'<div class="empty">No screenings.</div>'}</div></article>
+</div>`},
+movies(){
+content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Movie Library</h2><p class="muted">Movies and all available versions.</p></div><button class="primary" id="newMovie">+ Add movie</button></div></div><div class="page-grid" id="moviesGrid"></div>';
+renderMovies();document.querySelector("#newMovie").onclick=()=>movieDialog.showModal()},
+delivery(){
+content.innerHTML='<div class="card"><div class="card-head"><h2>Content Delivery Queue</h2><span class="pill warn">DEMO</span></div><div class="table-wrap"><table class="table"><thead><tr><th>Content</th><th>Destination</th><th>Status</th><th>Progress</th></tr></thead><tbody>'+state.downloads.map(d=>'<tr><td>'+d.name+'</td><td>Central Storage</td><td>'+statusPill(d.status)+'</td><td>'+d.progress+'%</td></tr>').join("")+'</tbody></table></div></div>'},
+schedule(){
+content.innerHTML='<div class="card"><div class="card-head"><h2>Schedule</h2><button class="primary" id="newScreening">+ New screening</button></div><div class="table-wrap"><table class="table"><thead><tr><th>Start</th><th>Hall</th><th>Movie</th><th>Version</th><th>Status</th><th></th></tr></thead><tbody>'+
+(state.screenings.map(s=>'<tr><td>'+fmtDate(s.starts_at)+'</td><td>'+s.hall_name+'</td><td>'+s.movie_title+'</td><td>'+s.version_name+'</td><td>'+statusPill(s.status)+'</td><td><button class="danger" data-delete-screening="'+s.id+'">Delete</button></td></tr>').join("")||'<tr><td colspan="6">No screenings yet.</td></tr>')+
+'</tbody></table></div></div>';
+document.querySelector("#newScreening").onclick=()=>openScreeningModal()},
+playlists(){content.innerHTML='<div class="grid two"><article class="card"><h2>Show Playlist</h2><p class="subtle">Следващият модул ще свърже реклами, трейлъри, филм и automation cues към конкретна прожекция.</p></article><article class="card"><h2>Automation cues</h2><div class="meta"><span>PRE-SHOW 70%</span><span>TRAILERS 50%</span><span>MOVIE 0%</span><span>CREDITS 20%</span><span>END 100%</span></div></article></div>'},
+halls(){
+content.innerHTML='<div class="card" style="margin-bottom:18px"><div class="card-head"><div><h2>Halls</h2><p class="muted">Cinema halls stored in D1.</p></div><button class="primary" id="newHall">+ Add hall</button></div></div><div class="page-grid">'+state.halls.map(h=>'<article class="movie-card"><div class="card-head"><h3>'+h.name+'</h3>'+statusPill(h.status)+'</div><p>'+h.seats+' seats</p><div class="meta"><span>D1</span><span>ID '+h.id+'</span></div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-edit-hall="'+h.id+'">Edit</button><button class="danger" data-delete-hall="'+h.id+'">Delete</button></div></article>').join("")+'</div>';
+document.querySelector("#newHall").onclick=()=>openHallModal()},
+automation(){content.innerHTML='<div class="grid two"><article class="card"><div class="card-head"><h2>Show Automation</h2><span class="pill warn">DEMO</span></div><p class="subtle">Future CinemaOS Agent commands for lights, curtains, audio and projector control.</p></article><article class="card"><h2>Hardware Adapter Layer</h2><p class="subtle">Real integration will use documented and authorized vendor interfaces.</p></article></div>'},
+ai(){content.innerHTML='<div class="card"><div class="card-head"><h2>AI Assistant</h2><span class="pill ai">BETA</span></div><p class="subtle">Next: schedule optimization using real screening and hall data.</p></div>'},
+reports(){content.innerHTML='<div class="grid three"><article class="card"><span class="muted">Screenings</span><div class="kpi">'+state.screenings.length+'</div></article><article class="card"><span class="muted">Movies</span><div class="kpi">'+state.movies.length+'</div></article><article class="card"><span class="muted">Halls</span><div class="kpi">'+state.halls.length+'</div></article></div>'},
+settings(){content.innerHTML='<div class="grid two"><article class="card"><h2>Cinema profile</h2><div class="field"><label>Cinema ID<input value="'+(state.cinema?.id||"")+'" readonly></label></div><div class="field"><label>Name<input value="'+(state.cinema?.name||"")+'" readonly></label></div></article><article class="card"><h2>Database</h2><p class="subtle">Cloudflare D1 connected.</p></article></div>'}
 };
 
 function renderMovies(){
-  const grid=document.querySelector("#moviesGrid");
-  if(!state.movies.length){grid.innerHTML='<div class="empty">No movies yet. Add the first one.</div>';return}
-  grid.innerHTML=state.movies.map(m=>{
-    const v=m.versions?.[0];
-    return `
-      <article class="movie-card">
-        <div class="card-head"><h3>${m.title}</h3>${statusPill(v?.status || "READY")}</div>
-        <p>${v?.name || "No version"}</p>
-        <div class="meta"><span>${v?.format || "DCP"}</span><span>${v?.audio || "Unknown audio"}</span></div>
-        <div style="margin-top:16px"><button class="danger" data-delete-movie="${m.id}">Delete</button></div>
-      </article>`;
-  }).join("");
+const grid=document.querySelector("#moviesGrid");
+if(!state.movies.length){grid.innerHTML='<div class="empty">No movies yet.</div>';return}
+grid.innerHTML=state.movies.map(m=>'<article class="movie-card"><div class="card-head"><h3>'+m.title+'</h3><span class="pill good">'+(m.versions?.length||0)+' VERSION(S)</span></div><p>'+(m.distributor||"No distributor")+'</p><div class="meta">'+(m.versions||[]).map(v=>'<span>'+v.name+' • '+(v.format||"DCP")+' • '+(v.audio||"")+'</span>').join("")+'</div><div style="margin-top:16px;display:flex;gap:8px"><button class="ghost" data-add-version="'+m.id+'">+ Version</button><button class="danger" data-delete-movie="'+m.id+'">Delete</button></div></article>').join("")
 }
 
-function openPage(name){
-  nav.forEach(n=>n.classList.toggle("active",n.dataset.page===name));
-  const active=nav.find(n=>n.dataset.page===name);
-  title.textContent=active?.textContent||"CinemaOS";
-  if(name!=="dashboard") subtitle.textContent="CinemaOS Control Center";
-  (pages[name]||pages.dashboard)();
+function openHallModal(hall){
+modal(hall?"Edit hall":"Add hall",'<div class="form-grid"><label>Name<input name="name" required value="'+(hall?.name||"")+'"></label><label>Seats<input name="seats" type="number" min="0" value="'+(hall?.seats||0)+'"></label><label>Status<select name="status"><option>IDLE</option><option>READY</option><option>PLAYING</option><option>OFFLINE</option></select></label></div>',async fd=>{
+if(hall)await api.send("/api/halls/"+hall.id,"PUT",{name:fd.get("name"),seats:Number(fd.get("seats")),status:fd.get("status")});
+else await api.send("/api/halls","POST",{name:fd.get("name"),seats:Number(fd.get("seats"))});
+state.halls=await api.get("/api/halls");pages.halls()
+});
 }
 
+function openVersionModal(movieId){
+modal("Add movie version",'<div class="form-grid"><label>Version<input name="version" required placeholder="BG Dub"></label><label>Format<select name="format"><option>2K DCP</option><option>4K DCP</option><option>Trailer DCP</option></select></label><label>Audio<select name="audio"><option>Dolby 7.1</option><option>5.1</option><option>Atmos</option></select></label><label>Language<input name="language" placeholder="bg"></label></div>',async fd=>{
+await api.send("/api/movies/"+movieId+"/versions","POST",{version:fd.get("version"),format:fd.get("format"),audio:fd.get("audio"),language:fd.get("language")});
+state.movies=await api.get("/api/movies");pages.movies()
+});
+}
+
+function openScreeningModal(){
+const vs=versions();
+if(!state.halls.length||!vs.length){alert("You need at least one hall and one movie version.");return}
+modal("New screening",'<div class="form-grid"><label>Hall<select name="hallId">'+state.halls.map(h=>'<option value="'+h.id+'">'+h.name+'</option>').join("")+'</select></label><label>Movie / version<select name="versionId">'+vs.map(v=>'<option value="'+v.id+'">'+v.movieTitle+' — '+v.name+'</option>').join("")+'</select></label><label>Start<input name="startsAt" type="datetime-local" required></label></div>',async fd=>{
+const local=fd.get("startsAt");const iso=new Date(local).toISOString();
+await api.send("/api/screenings","POST",{hallId:fd.get("hallId"),versionId:fd.get("versionId"),startsAt:iso});
+state.screenings=await api.get("/api/screenings");pages.schedule()
+});
+}
+
+function openPage(name){nav.forEach(n=>n.classList.toggle("active",n.dataset.page===name));title.textContent=nav.find(n=>n.dataset.page===name)?.textContent||"CinemaOS";if(name!=="dashboard")subtitle.textContent="CinemaOS Control Center";(pages[name]||pages.dashboard)()}
 nav.forEach(btn=>btn.addEventListener("click",()=>openPage(btn.dataset.page)));
 document.querySelector("#quickMovie").onclick=()=>movieDialog.showModal();
 
 document.addEventListener("click",async e=>{
-  const go=e.target.closest("[data-go]");
-  if(go) openPage(go.dataset.go);
-
-  const del=e.target.closest("[data-delete-movie]");
-  if(del){
-    if(!confirm("Delete this movie and its versions?")) return;
-    try{
-      await api.send("/api/movies/"+encodeURIComponent(del.dataset.deleteMovie),"DELETE");
-      state.movies=await api.get("/api/movies");
-      renderMovies();
-    }catch(err){ alert(err.message); }
-  }
+const go=e.target.closest("[data-go]");if(go)openPage(go.dataset.go);
+const del=e.target.closest("[data-delete-movie]");if(del&&confirm("Delete this movie and its versions?")){await api.send("/api/movies/"+encodeURIComponent(del.dataset.deleteMovie),"DELETE");state.movies=await api.get("/api/movies");renderMovies()}
+const av=e.target.closest("[data-add-version]");if(av)openVersionModal(av.dataset.addVersion);
+const eh=e.target.closest("[data-edit-hall]");if(eh)openHallModal(state.halls.find(h=>h.id===eh.dataset.editHall));
+const dh=e.target.closest("[data-delete-hall]");if(dh&&confirm("Delete this hall?")){try{await api.send("/api/halls/"+encodeURIComponent(dh.dataset.deleteHall),"DELETE");state.halls=await api.get("/api/halls");pages.halls()}catch(err){alert(err.message)}}
+const ds=e.target.closest("[data-delete-screening]");if(ds&&confirm("Delete this screening?")){await api.send("/api/screenings/"+encodeURIComponent(ds.dataset.deleteScreening),"DELETE");state.screenings=await api.get("/api/screenings");pages.schedule()}
 });
 
-movieForm.addEventListener("submit",async e=>{
-  e.preventDefault();
-  const fd=new FormData(movieForm);
-  try{
-    await api.send("/api/movies","POST",{
-      title:fd.get("title"),
-      version:fd.get("version")||"Original",
-      format:fd.get("format"),
-      audio:fd.get("audio")
-    });
-    state.movies=await api.get("/api/movies");
-    movieForm.reset();
-    movieDialog.close();
-    openPage("movies");
-  }catch(err){ alert(err.message); }
-});
+movieForm.addEventListener("submit",async e=>{e.preventDefault();const fd=new FormData(movieForm);try{await api.send("/api/movies","POST",{title:fd.get("title"),version:fd.get("version")||"Original",format:fd.get("format"),audio:fd.get("audio")});state.movies=await api.get("/api/movies");movieForm.reset();movieDialog.close();openPage("movies")}catch(err){alert(err.message)}});
 
-(async()=>{
-  await loadBackend();
-  openPage("dashboard");
-})();
+(async()=>{await refresh();openPage("dashboard")})();
